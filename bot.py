@@ -705,34 +705,296 @@ def server_summary(guild: discord.Guild) -> str:
     )
 
 
-async def get_or_create_role(guild: discord.Guild, name: str) -> tuple[discord.Role, bool]:
-    existing = discord.utils.get(guild.roles, name=name)
-    if existing:
-        return existing, False
+ROLE_PERMISSIONS = {
+    "Owner": discord.Permissions(administrator=True),
+    "Administrator": discord.Permissions(administrator=True),
+    "Moderator": discord.Permissions(
+        manage_messages=True,
+        moderate_members=True,
+        kick_members=True,
+        ban_members=True,
+        manage_nicknames=True,
+        view_audit_log=True,
+    ),
+    "Manager": discord.Permissions(
+        manage_channels=True,
+        manage_messages=True,
+        moderate_members=True,
+        manage_nicknames=True,
+        view_audit_log=True,
+    ),
+    "Staff": discord.Permissions(
+        manage_messages=True,
+        moderate_members=True,
+        view_audit_log=True,
+    ),
+    "Support": discord.Permissions(
+        manage_messages=True,
+        view_audit_log=True,
+    ),
+}
 
-    permissions = discord.Permissions.none()
-    if name == "Administrator":
-        permissions = discord.Permissions(administrator=True)
-    elif name in {"Moderator", "Manager"}:
-        permissions = discord.Permissions(
+STAFF_ROLE_NAMES = ("Owner", "Administrator", "Manager", "Moderator", "Staff")
+SUPPORT_ROLE_NAMES = ("Support", "Moderator", "Staff", "Manager", "Administrator", "Owner")
+READ_ONLY_CHANNEL_MARKERS = (
+    "welcome",
+    "rules",
+    "announcements",
+    "updates",
+    "restocks",
+    "roles",
+    "services",
+)
+TICKET_CHANNEL_MARKERS = ("open-a-ticket", "support-ticket", "ticket-panel")
+STAFF_CHANNEL_MARKERS = ("staff", "mod-logs", "configs")
+
+
+def desired_role_permissions(name: str) -> discord.Permissions:
+    return ROLE_PERMISSIONS.get(name, discord.Permissions.none())
+
+
+def roles_by_name(guild: discord.Guild, names: tuple[str, ...]) -> list[discord.Role]:
+    roles = []
+    seen = set()
+    for name in names:
+        role = discord.utils.get(guild.roles, name=name)
+        if role and role.id not in seen:
+            roles.append(role)
+            seen.add(role.id)
+    return roles
+
+
+def channel_name_matches(channel_name: str, marker: str) -> bool:
+    lowered = channel_name.casefold()
+    return lowered == marker or lowered.endswith(marker)
+
+
+def category_is_support(category_name: str) -> bool:
+    return "support" in category_name.casefold()
+
+
+def area_is_staff(category_name: str, channel_name: str | None = None) -> bool:
+    value = f"{category_name} {channel_name or ''}".casefold()
+    return any(marker in value for marker in STAFF_CHANNEL_MARKERS)
+
+
+def channel_is_read_only(channel_name: str) -> bool:
+    return any(
+        channel_name_matches(channel_name, marker)
+        for marker in READ_ONLY_CHANNEL_MARKERS
+    )
+
+
+def channel_is_ticket_intake(channel_name: str) -> bool:
+    return any(marker in channel_name.casefold() for marker in TICKET_CHANNEL_MARKERS)
+
+
+def channel_is_voice_counter(category_name: str, channel_name: str) -> bool:
+    if category_name.casefold() != "about us":
+        return False
+
+    lowered = channel_name.casefold()
+    return (
+        lowered.startswith("all members:")
+        or lowered.startswith("vouches:")
+        or ".com" in lowered
+    )
+
+
+def add_bot_overwrite(
+    guild: discord.Guild,
+    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite],
+) -> None:
+    if guild.me is None:
+        return
+
+    overwrites[guild.me] = discord.PermissionOverwrite(
+        view_channel=True,
+        send_messages=True,
+        read_message_history=True,
+        manage_channels=True,
+        manage_messages=True,
+        connect=True,
+        speak=True,
+    )
+
+
+def staff_overwrites(
+    guild: discord.Guild,
+    staff_roles: list[discord.Role],
+) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False)
+    }
+    for role in staff_roles:
+        overwrites[role] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
             manage_messages=True,
-            moderate_members=True,
-            kick_members=True,
-            view_audit_log=True,
+            connect=True,
+            speak=True,
         )
+    add_bot_overwrite(guild, overwrites)
+    return overwrites
+
+
+def support_overwrites(
+    guild: discord.Guild,
+    support_roles: list[discord.Role],
+) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+        )
+    }
+    for role in support_roles:
+        overwrites[role] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            attach_files=True,
+            manage_messages=True,
+        )
+    add_bot_overwrite(guild, overwrites)
+    return overwrites
+
+
+def read_only_overwrites(
+    guild: discord.Guild,
+    staff_roles: list[discord.Role],
+) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=False,
+            read_message_history=True,
+        )
+    }
+    for role in staff_roles:
+        overwrites[role] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            manage_messages=True,
+        )
+    add_bot_overwrite(guild, overwrites)
+    return overwrites
+
+
+def voice_counter_overwrites(
+    guild: discord.Guild,
+) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
+    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=True,
+            connect=False,
+        )
+    }
+    add_bot_overwrite(guild, overwrites)
+    return overwrites
+
+
+def category_overwrites(
+    guild: discord.Guild,
+    category_name: str,
+    staff_roles: list[discord.Role],
+    support_roles: list[discord.Role],
+) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite] | None:
+    if area_is_staff(category_name):
+        return staff_overwrites(guild, staff_roles)
+    if category_is_support(category_name):
+        return support_overwrites(guild, support_roles)
+    return None
+
+
+def channel_overwrites(
+    guild: discord.Guild,
+    category_name: str,
+    channel_name: str,
+    channel_type: str,
+    staff_roles: list[discord.Role],
+    support_roles: list[discord.Role],
+) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite] | None:
+    if area_is_staff(category_name, channel_name):
+        return staff_overwrites(guild, staff_roles)
+    if channel_is_ticket_intake(channel_name):
+        return read_only_overwrites(guild, support_roles)
+    if channel_type == "voice" and channel_is_voice_counter(category_name, channel_name):
+        return voice_counter_overwrites(guild)
+    if channel_type == "text" and channel_is_read_only(channel_name):
+        return read_only_overwrites(guild, staff_roles)
+    return None
+
+
+async def apply_overwrites_if_changed(
+    target: discord.CategoryChannel | discord.TextChannel | discord.VoiceChannel,
+    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] | None,
+) -> bool:
+    if overwrites is None or target.overwrites == overwrites:
+        return False
+
+    await target.edit(
+        overwrites=overwrites,
+        reason="Updated by the smart server builder",
+    )
+    return True
+
+
+def find_category_containing(guild: discord.Guild, marker: str) -> discord.CategoryChannel | None:
+    marker = marker.casefold()
+    return discord.utils.find(
+        lambda category: marker in category.name.casefold(),
+        guild.categories,
+    )
+
+
+def find_text_channel_by_marker(guild: discord.Guild, marker: str) -> discord.TextChannel | None:
+    marker = marker.casefold()
+    return discord.utils.find(
+        lambda channel: channel.name.casefold() == marker
+        or channel.name.casefold().endswith(marker),
+        guild.text_channels,
+    )
+
+
+async def get_or_create_role(
+    guild: discord.Guild,
+    name: str,
+    update_existing: bool = False,
+) -> tuple[discord.Role, bool, bool]:
+    existing = discord.utils.get(guild.roles, name=name)
+    permissions = desired_role_permissions(name)
+
+    if existing:
+        can_edit = (
+            update_existing
+            and guild.me is not None
+            and not existing.managed
+            and existing < guild.me.top_role
+        )
+        if can_edit and existing.permissions != permissions:
+            await existing.edit(
+                permissions=permissions,
+                reason="Updated by the smart server builder",
+            )
+            return existing, False, True
+        return existing, False, False
 
     role = await guild.create_role(
         name=name,
         permissions=permissions,
         reason="Created by the smart server builder",
     )
-    return role, True
+    return role, True, False
 
 
 @bot.tree.command(description="Build an organized server layout from a template.")
 @app_commands.describe(
-    template="Choose gaming, community, or business",
-    keep_existing="Keep all existing channels and add only missing items",
+    template="Choose the server layout to build",
+    keep_existing="Preserve existing matching channels and permissions",
 )
 @app_commands.choices(
     template=[
@@ -756,109 +1018,86 @@ async def build_server(
     await interaction.response.defer(ephemeral=True, thinking=True)
     layout = SERVER_TEMPLATES[template.value]
     created_roles = 0
+    updated_permissions = 0
     created_categories = 0
-    created_channels = 0
+    created_text_channels = 0
+    created_voice_channels = 0
 
     try:
         for role_name in reversed(layout["roles"]):
-            _, created = await get_or_create_role(guild, role_name)
+            _, created, updated = await get_or_create_role(
+                guild,
+                role_name,
+                update_existing=not keep_existing,
+            )
             created_roles += int(created)
+            updated_permissions += int(updated)
+
+        staff_roles = roles_by_name(guild, STAFF_ROLE_NAMES)
+        support_roles = roles_by_name(guild, SUPPORT_ROLE_NAMES)
 
         for category_name, channels in layout["categories"].items():
             category = discord.utils.get(guild.categories, name=category_name)
+            overwrites = category_overwrites(
+                guild,
+                category_name,
+                staff_roles,
+                support_roles,
+            )
             if category is None:
-                overwrites = None
-                if category_name == "STAFF":
-                    staff_role = (
-                        discord.utils.get(guild.roles, name="Moderator")
-                        or discord.utils.get(guild.roles, name="Staff")
-                        or discord.utils.get(guild.roles, name="Manager")
-                    )
-                    if staff_role and guild.me:
-                        overwrites = {
-                            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                            staff_role: discord.PermissionOverwrite(
-                                view_channel=True,
-                                send_messages=True,
-                                read_message_history=True,
-                            ),
-                            guild.me: discord.PermissionOverwrite(
-                                view_channel=True,
-                                send_messages=True,
-                                manage_channels=True,
-                            ),
-                        }
-
                 category = await guild.create_category(
                     category_name,
                     overwrites=overwrites,
                     reason="Created by the smart server builder",
                 )
                 created_categories += 1
+            elif not keep_existing:
+                updated_permissions += int(
+                    await apply_overwrites_if_changed(category, overwrites)
+                )
 
             for channel_name, channel_type in channels:
                 existing = discord.utils.get(category.channels, name=channel_name)
+                overwrites = channel_overwrites(
+                    guild,
+                    category_name,
+                    channel_name,
+                    channel_type,
+                    staff_roles,
+                    support_roles,
+                )
                 if existing:
-                    continue
-
-                channel_overwrites = None
-
-                if template.value == "store" and category_name == "About Us":
-                    channel_overwrites = {
-                        guild.default_role: discord.PermissionOverwrite(
-                            view_channel=True,
-                            connect=False,
+                    if not keep_existing and isinstance(
+                        existing,
+                        (discord.TextChannel, discord.VoiceChannel),
+                    ):
+                        updated_permissions += int(
+                            await apply_overwrites_if_changed(existing, overwrites)
                         )
-                    }
-
-                if template.value == "store" and (
-                    "Staff" in category_name or channel_name == "⚙️│configs"
-                ):
-                    staff_role = (
-                        discord.utils.get(guild.roles, name="Administrator")
-                        or discord.utils.get(guild.roles, name="Manager")
-                        or discord.utils.get(guild.roles, name="Support")
-                    )
-                    if staff_role and guild.me:
-                        channel_overwrites = {
-                            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                            staff_role: discord.PermissionOverwrite(
-                                view_channel=True,
-                                send_messages=True,
-                                read_message_history=True,
-                            ),
-                            guild.me: discord.PermissionOverwrite(
-                                view_channel=True,
-                                send_messages=True,
-                                manage_channels=True,
-                            ),
-                        }
+                    continue
 
                 if channel_type == "voice":
                     await guild.create_voice_channel(
                         channel_name,
                         category=category,
-                        overwrites=channel_overwrites,
+                        overwrites=overwrites,
                         reason="Created by the smart server builder",
                     )
+                    created_voice_channels += 1
                 else:
                     await guild.create_text_channel(
                         channel_name,
                         category=category,
-                        overwrites=channel_overwrites,
+                        overwrites=overwrites,
                         reason="Created by the smart server builder",
                     )
-                created_channels += 1
+                    created_text_channels += 1
 
         # Automatically connect existing bot systems to common channels.
-        welcome = discord.utils.get(guild.text_channels, name="welcome")
-        logs = discord.utils.get(guild.text_channels, name="mod-logs")
-        support_category = discord.utils.get(guild.categories, name="SUPPORT")
-        support_role = (
-            discord.utils.get(guild.roles, name="Moderator")
-            or discord.utils.get(guild.roles, name="Staff")
-            or discord.utils.get(guild.roles, name="Manager")
-        )
+        welcome = find_text_channel_by_marker(guild, "welcome")
+        logs = find_text_channel_by_marker(guild, "mod-logs")
+        support_category = find_category_containing(guild, "support")
+        support_role = support_roles[0] if support_roles else None
         if welcome:
             upsert_setting(guild.id, "welcome_channel_id", welcome.id)
         if logs:
@@ -868,7 +1107,7 @@ async def build_server(
         if support_role:
             upsert_setting(guild.id, "support_role_id", support_role.id)
 
-        rules_channel = discord.utils.get(guild.text_channels, name="rules")
+        rules_channel = find_text_channel_by_marker(guild, "rules")
         if rules_channel and not any(
             message.author == guild.me
             async for message in rules_channel.history(limit=10)
@@ -893,9 +1132,15 @@ async def build_server(
         await interaction.followup.send(
             f"✅ **{template.name} created.**\n"
             f"New roles: **{created_roles}**\n"
+            f"Permission updates: **{updated_permissions}**\n"
             f"New categories: **{created_categories}**\n"
-            f"New channels: **{created_channels}**\n\n"
-            "Existing matching channels were left unchanged.",
+            f"New text channels: **{created_text_channels}**\n"
+            f"New voice channels: **{created_voice_channels}**\n\n"
+            + (
+                "Existing matching channels and permissions were left unchanged."
+                if keep_existing
+                else "Existing matching roles, categories, and channels had builder permissions refreshed."
+            ),
             ephemeral=True,
         )
     except discord.Forbidden:
