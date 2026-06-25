@@ -18,7 +18,8 @@ bot.synced_commands_once = False
 
 STAFF_ROLE_NAMES = (
     "Founder", "Foundation Advisor", "Supreme Command", "Elite Command",
-    "Trial Moderation", "Administrator", "Moderator", "Staff"
+    "Trial Moderation", "Head Admin", "Admin", "Senior Moderator",
+    "Administrator", "Moderator", "Support Manager", "Support Staff", "Staff"
 )
 
 AGENCY_ROLES = [
@@ -97,19 +98,20 @@ SIMPLE_CHANNELS = {
     "STAFF": [("staff-chat", "text"), ("mod-logs", "text")],
 }
 
-OLD_LAYOUT_CATEGORIES = {
-    "COMMUNITY",
-    "GAMING",
-    "SUPPORT",
-    "STAFF",
-    "INFORMATION",
-    "CLIENT AREA",
-    "About Us",
-    "┌──── Information ────┐",
-    "┌──── Support ────┐",
-    "┌──── Chat ────┐",
-    "┌──── Staff ────┐",
-}
+HIERARCHY_ROLES = [
+    ("👑 Owner", discord.Permissions(administrator=True)),
+    ("🛡️ Head Admin", discord.Permissions(administrator=True)),
+    ("⚔️ Admin", discord.Permissions(administrator=True)),
+    ("🛠️ Senior Moderator", discord.Permissions(kick_members=True, manage_messages=True, moderate_members=True)),
+    ("🔨 Moderator", discord.Permissions(kick_members=True, manage_messages=True, moderate_members=True)),
+    ("🎫 Support Manager", discord.Permissions(manage_channels=True, manage_threads=True, manage_messages=True)),
+    ("📨 Support Staff", discord.Permissions(manage_threads=True, manage_messages=True)),
+    ("💎 Premium", discord.Permissions(view_channel=True, send_messages=True, read_message_history=True)),
+    ("⭐ Verified", discord.Permissions(view_channel=True, send_messages=True, read_message_history=True)),
+    ("👤 Member", discord.Permissions(view_channel=True, send_messages=True, read_message_history=True)),
+    ("🆕 New Member", discord.Permissions(view_channel=True, read_message_history=True)),
+    ("🚫 Muted", discord.Permissions(view_channel=True, read_message_history=True)),
+]
 
 READ_ONLY_MARKERS = (
     "rules", "announcements", "updates", "pay-announcements", "event-announcements",
@@ -317,45 +319,79 @@ async def build_server(interaction: discord.Interaction, template: app_commands.
         raise
 
 
-@bot.tree.command(description="Remove old template categories after confirming.")
-@app_commands.describe(confirm="Type DELETE to confirm", include_start_here="Also remove START HERE")
+@bot.tree.command(description="Create and order the server role hierarchy.")
 @app_commands.checks.has_permissions(administrator=True)
-async def delete_old_layout(interaction: discord.Interaction, confirm: str, include_start_here: bool = False) -> None:
+async def setup_hierarchy(interaction: discord.Interaction) -> None:
     guild = interaction.guild
     if guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
-    if confirm != "DELETE":
-        await interaction.response.send_message("Type DELETE in the confirm field to run cleanup.", ephemeral=True)
-        return
 
     await interaction.response.defer(ephemeral=True, thinking=True)
-    names_to_remove = set(OLD_LAYOUT_CATEGORIES)
-    if include_start_here:
-        names_to_remove.add("START HERE")
 
-    removed_channels = 0
-    removed_categories = 0
+    if guild.me is None:
+        await interaction.followup.send("I could not find my bot member in this server.", ephemeral=True)
+        return
+
+    created = 0
+    updated = 0
+    moved = 0
+    failed: list[str] = []
+    role_objects: list[discord.Role] = []
+
     try:
-        for category in list(guild.categories):
-            if category.name not in names_to_remove:
-                continue
-            for channel in list(category.channels):
-                await channel.delete(reason="Removed old layout")
-                removed_channels += 1
-            await category.delete(reason="Removed old layout")
-            removed_categories += 1
+        for role_name, permissions in HIERARCHY_ROLES:
+            role = discord.utils.get(guild.roles, name=role_name)
+            if role is None:
+                role = await guild.create_role(
+                    name=role_name,
+                    permissions=permissions,
+                    reason="Created by hierarchy setup",
+                )
+                created += 1
+            else:
+                await role.edit(permissions=permissions, reason="Updated by hierarchy setup")
+                updated += 1
+            role_objects.append(role)
 
-        await interaction.followup.send(
-            f"Old layout cleanup done. Removed categories: {removed_categories}, removed channels: {removed_channels}.",
-            ephemeral=True,
-        )
+        position = max(guild.me.top_role.position - 1, 1)
+        for role in role_objects:
+            if role >= guild.me.top_role:
+                failed.append(role.name)
+                continue
+            await role.edit(position=position, reason="Ordered by hierarchy setup")
+            position = max(position - 1, 1)
+            moved += 1
+
+        muted_role = discord.utils.get(guild.roles, name="🚫 Muted")
+        if muted_role is not None:
+            overwrite = discord.PermissionOverwrite(
+                send_messages=False,
+                speak=False,
+                add_reactions=False,
+                create_public_threads=False,
+                create_private_threads=False,
+            )
+            for channel in guild.channels:
+                if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel)):
+                    try:
+                        await channel.set_permissions(muted_role, overwrite=overwrite, reason="Muted role restrictions")
+                    except discord.Forbidden:
+                        failed.append(f"{channel.name} muted permissions")
+
+        message = f"Hierarchy setup done. Created: {created}, updated: {updated}, moved: {moved}."
+        if failed:
+            message += " Could not update: " + ", ".join(failed[:10])
+            if len(failed) > 10:
+                message += f" and {len(failed) - 10} more."
+        await interaction.followup.send(message, ephemeral=True)
     except discord.Forbidden:
         await interaction.followup.send(
-            "I need Manage Channels permission to remove the old layout.", ephemeral=True
+            "I need Administrator or Manage Roles. Move my bot role near the top, above every role I should manage.",
+            ephemeral=True,
         )
     except Exception as exc:
-        await interaction.followup.send(f"Cleanup error: {type(exc).__name__}: {exc}", ephemeral=True)
+        await interaction.followup.send(f"Hierarchy error: {type(exc).__name__}: {exc}", ephemeral=True)
         raise
 
 
