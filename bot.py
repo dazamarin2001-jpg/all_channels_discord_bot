@@ -1,6 +1,4 @@
 import os
-import sqlite3
-from datetime import timedelta
 from typing import Optional
 
 import discord
@@ -8,29 +6,20 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-try:
-    from openai import AsyncOpenAI
-except ImportError:
-    AsyncOpenAI = None
-
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 TEST_GUILD_ID = os.getenv("TEST_GUILD_ID")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "bot_data.db")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-AI_MODEL = os.getenv("AI_MODEL", "gpt-4.1-mini")
-ai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY and AsyncOpenAI else None
 
 if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN is missing. Copy .env.example to .env and add your bot token.")
+    raise RuntimeError("DISCORD_TOKEN is missing. Add DISCORD_TOKEN in Railway Variables.")
 
 intents = discord.Intents.default()
 intents.members = True
 
+
 class ServerBot(commands.Bot):
     async def setup_hook(self) -> None:
-        initialize_database()
         self.add_view(TicketPanel())
         self.add_view(CloseTicketView())
 
@@ -45,88 +34,6 @@ class ServerBot(commands.Bot):
 
 
 bot = ServerBot(command_prefix="!", intents=intents)
-db = sqlite3.connect(DATABASE_PATH)
-db.row_factory = sqlite3.Row
-
-
-def initialize_database() -> None:
-    db.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS guild_settings (
-            guild_id INTEGER PRIMARY KEY,
-            welcome_channel_id INTEGER,
-            log_channel_id INTEGER,
-            ticket_category_id INTEGER,
-            support_role_id INTEGER
-        );
-
-        CREATE TABLE IF NOT EXISTS warnings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            moderator_id INTEGER NOT NULL,
-            reason TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    db.commit()
-
-
-def get_settings(guild_id: int) -> sqlite3.Row | None:
-    return db.execute(
-        "SELECT * FROM guild_settings WHERE guild_id = ?", (guild_id,)
-    ).fetchone()
-
-
-def upsert_setting(guild_id: int, column: str, value: int | None) -> None:
-    allowed = {
-        "welcome_channel_id",
-        "log_channel_id",
-        "ticket_category_id",
-        "support_role_id",
-    }
-    if column not in allowed:
-        raise ValueError("Invalid settings column")
-
-    db.execute(
-        "INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)", (guild_id,)
-    )
-    db.execute(
-        f"UPDATE guild_settings SET {column} = ? WHERE guild_id = ?",
-        (value, guild_id),
-    )
-    db.commit()
-
-
-async def send_log(guild: discord.Guild, embed: discord.Embed) -> None:
-    settings = get_settings(guild.id)
-    if not settings or not settings["log_channel_id"]:
-        return
-
-    channel = guild.get_channel(settings["log_channel_id"])
-    if isinstance(channel, discord.TextChannel):
-        try:
-            await channel.send(embed=embed)
-        except discord.Forbidden:
-            pass
-
-
-def moderation_embed(
-    action: str,
-    target: discord.abc.User,
-    moderator: discord.abc.User,
-    reason: str,
-) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"Moderation: {action}",
-        color=discord.Color.orange(),
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.add_field(name="Member", value=f"{target} (`{target.id}`)", inline=False)
-    embed.add_field(name="Moderator", value=f"{moderator} (`{moderator.id}`)", inline=False)
-    embed.add_field(name="Reason", value=reason, inline=False)
-    return embed
 
 
 class TicketPanel(discord.ui.View):
@@ -143,20 +50,10 @@ class TicketPanel(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message(
-                "Tickets can only be opened inside a server.", ephemeral=True
-            )
+            await interaction.response.send_message("Use this inside a server.", ephemeral=True)
             return
 
         guild = interaction.guild
-        settings = get_settings(guild.id)
-        category = None
-        support_role = None
-
-        if settings:
-            category = guild.get_channel(settings["ticket_category_id"]) if settings["ticket_category_id"] else None
-            support_role = guild.get_role(settings["support_role_id"]) if settings["support_role_id"] else None
-
         existing = discord.utils.find(
             lambda c: isinstance(c, discord.TextChannel)
             and c.topic == f"ticket-owner:{interaction.user.id}",
@@ -173,6 +70,13 @@ class TicketPanel(discord.ui.View):
             await interaction.response.send_message("Bot member could not be resolved.", ephemeral=True)
             return
 
+        category = discord.utils.find(
+            lambda c: isinstance(c, discord.CategoryChannel)
+            and ("help" in c.name.lower() or "support" in c.name.lower()),
+            guild.categories,
+        )
+        support_role = discord.utils.get(guild.roles, name="Support") or discord.utils.get(guild.roles, name="Staff")
+
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(
@@ -188,7 +92,6 @@ class TicketPanel(discord.ui.View):
                 read_message_history=True,
             ),
         }
-
         if support_role:
             overwrites[support_role] = discord.PermissionOverwrite(
                 view_channel=True,
@@ -200,15 +103,14 @@ class TicketPanel(discord.ui.View):
         try:
             channel = await guild.create_text_channel(
                 name=f"ticket-{safe_name}",
-                category=category if isinstance(category, discord.CategoryChannel) else None,
+                category=category,
                 overwrites=overwrites,
                 topic=f"ticket-owner:{interaction.user.id}",
                 reason=f"Ticket opened by {interaction.user}",
             )
         except discord.Forbidden:
             await interaction.response.send_message(
-                "I need the **Manage Channels** permission to create tickets.",
-                ephemeral=True,
+                "I need **Manage Channels** to create tickets.", ephemeral=True
             )
             return
 
@@ -221,9 +123,7 @@ class TicketPanel(discord.ui.View):
             ),
             view=CloseTicketView(),
         )
-        await interaction.response.send_message(
-            f"Your ticket was created: {channel.mention}", ephemeral=True
-        )
+        await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
 
 
 class CloseTicketView(discord.ui.View):
@@ -241,24 +141,17 @@ class CloseTicketView(discord.ui.View):
     ) -> None:
         channel = interaction.channel
         if not isinstance(channel, discord.TextChannel) or not channel.topic or not channel.topic.startswith("ticket-owner:"):
-            await interaction.response.send_message(
-                "This is not a ticket channel.", ephemeral=True
-            )
+            await interaction.response.send_message("This is not a ticket channel.", ephemeral=True)
             return
 
         owner_id = int(channel.topic.split(":", 1)[1])
-        member = interaction.user
-        can_close = (
-            member.id == owner_id
-            or (
-                isinstance(member, discord.Member)
-                and member.guild_permissions.manage_channels
-            )
+        can_close = interaction.user.id == owner_id or (
+            isinstance(interaction.user, discord.Member)
+            and interaction.user.guild_permissions.manage_channels
         )
         if not can_close:
             await interaction.response.send_message(
-                "Only the ticket owner or staff can close this ticket.",
-                ephemeral=True,
+                "Only the ticket owner or staff can close this ticket.", ephemeral=True
             )
             return
 
@@ -266,87 +159,305 @@ class CloseTicketView(discord.ui.View):
         await channel.delete(reason=f"Ticket closed by {interaction.user}")
 
 
+ROLE_PERMISSIONS = {
+    "Founder": discord.Permissions(administrator=True),
+    "Foundation Advisor": discord.Permissions(administrator=True),
+    "Administrator": discord.Permissions(administrator=True),
+    "Supreme Command": discord.Permissions(
+        manage_channels=True,
+        manage_roles=True,
+        manage_messages=True,
+        moderate_members=True,
+        view_audit_log=True,
+    ),
+    "Elite Command": discord.Permissions(
+        manage_channels=True,
+        manage_messages=True,
+        moderate_members=True,
+        view_audit_log=True,
+    ),
+    "Moderator": discord.Permissions(
+        manage_messages=True,
+        moderate_members=True,
+        manage_nicknames=True,
+        view_audit_log=True,
+    ),
+    "Trial Moderation": discord.Permissions(
+        manage_messages=True,
+        moderate_members=True,
+        view_audit_log=True,
+    ),
+    "Staff": discord.Permissions(
+        manage_messages=True,
+        moderate_members=True,
+        view_audit_log=True,
+    ),
+    "Support": discord.Permissions(manage_messages=True),
+}
+
+STAFF_ROLE_NAMES = (
+    "Founder",
+    "Foundation Advisor",
+    "Administrator",
+    "Supreme Command",
+    "Elite Command",
+    "Moderator",
+    "Trial Moderation",
+    "Staff",
+)
+READ_ONLY_MARKERS = (
+    "rules",
+    "announcements",
+    "updates",
+    "pay-announcements",
+    "event-announcements",
+    "broadcasting-announcements",
+    "donation-shoutout",
+    "applications-and-quizzes",
+    "blog-updates",
+    "giveaways",
+    "polls",
+    "twitter",
+    "reaction-roles",
+    "birthday-set",
+)
+STAFF_MARKERS = (
+    "staff",
+    "elective",
+    "ownership",
+    "presidential-chat",
+    "supreme-command",
+    "elite-command",
+    "founders-reps",
+    "special-division-leaders",
+    "moderation-5ic",
+)
+VOICE_COUNTER_PREFIXES = ("server members:", "staff members:", "boost tier:")
+
+SERVER_TEMPLATES = {
+    "agency": {
+        "roles": [
+            "Founder",
+            "Foundation Advisor",
+            "Supreme Command",
+            "Elite Command",
+            "Trial Moderation",
+            "Legend",
+            "Supreme Donator",
+            "Emerald Donator",
+            "Administrator",
+            "Moderator",
+            "Staff",
+            "Support",
+            "Member",
+            "Bot",
+        ],
+        "categories": {
+            "START HERE": [
+                ("📜︱server-rules", "text"),
+                ("find-channel", "text"),
+                ("Server Members: 0", "voice"),
+                ("Staff Members: 0", "voice"),
+                ("Boost tier: 0", "voice"),
+            ],
+            "📣 ANNOUNCEMENTS": [
+                ("📣︱staff-announcements", "text"),
+                ("📣︱code-of-conduct-announcements", "text"),
+                ("📣︱staff-updates", "text"),
+                ("📣︱pay-announcements", "text"),
+                ("📣︱event-announcements", "text"),
+                ("📣︱broadcasting-announcements", "text"),
+                ("📣︱donation-shoutout", "text"),
+                ("📋︱applications-and-quizzes", "text"),
+                ("📰︱blog-updates", "text"),
+                ("💕︱compliments-and-confessions", "text"),
+                ("🎁︱giveaways", "text"),
+                ("📊︱polls", "text"),
+                ("𝕏︱twitter", "text"),
+            ],
+            "💬 SOCIAL CHATS": [
+                ("🚀︱nitro-boosters", "text"),
+            ],
+            "HELP DESK": [
+                ("🏷️︱role-request-plats", "text"),
+                ("✅︱reaction-roles", "text"),
+                ("📑︱name-change-request", "text"),
+                ("📑︱requests", "text"),
+                ("❓︱questions", "text"),
+                ("⚙️︱report-a-bug-or-issue", "text"),
+                ("💡︱suggestions", "text"),
+                ("💡︱suggestions-feedback", "text"),
+                ("🎂︱birthday-set", "text"),
+            ],
+            "💬 ELECTIVE CHATS": [
+                ("『💬』elective-general", "text"),
+                ("『✍️』elective-point-vouch", "text"),
+                ("『📋』elective-task-requests", "text"),
+                ("『🗂️』elective-task-management", "text"),
+                ("『🧸』founders-reps", "text"),
+                ("『🟣』ownership", "text"),
+                ("『🔵』presidential-chat", "text"),
+                ("『🔴』supreme-command", "text"),
+                ("『⚪』elite-command", "text"),
+                ("『🟡』elective-internship", "text"),
+                ("『✍️』elec-intern-point-vouch", "text"),
+                ("『🏆』special-division-leaders", "text"),
+                ("『⚫』moderation-5ic", "text"),
+                ("『✍️』moderation-point-vouch", "text"),
+            ],
+            "SHARE WITH THE CLASS": [
+                ("🍔︱food", "text"),
+                ("🐸︱pet-pics", "text"),
+                ("✈️︱travel-pics", "text"),
+                ("📸︱selfie-channel", "text"),
+                ("🤣︱best-memes", "text"),
+                ("🎮︱gamers-corner", "text"),
+                ("📱︱tiktoks", "text"),
+            ],
+        },
+    },
+    "simple": {
+        "roles": ["Administrator", "Moderator", "Staff", "Support", "Member", "Bot"],
+        "categories": {
+            "START HERE": [("welcome", "text"), ("rules", "text"), ("announcements", "text")],
+            "COMMUNITY": [("general", "text"), ("media", "text"), ("suggestions", "text")],
+            "SUPPORT": [("open-a-ticket", "text"), ("questions", "text")],
+            "STAFF": [("staff-chat", "text"), ("mod-logs", "text")],
+        },
+    },
+}
+
+
+def roles_by_name(guild: discord.Guild, names: tuple[str, ...]) -> list[discord.Role]:
+    return [role for role in guild.roles if role.name in names]
+
+
+def is_staff_area(category_name: str, channel_name: str = "") -> bool:
+    value = f"{category_name} {channel_name}".casefold()
+    return any(marker in value for marker in STAFF_MARKERS)
+
+
+def is_read_only(channel_name: str) -> bool:
+    lowered = channel_name.casefold()
+    return any(marker in lowered for marker in READ_ONLY_MARKERS)
+
+
+def is_voice_counter(channel_name: str) -> bool:
+    lowered = channel_name.casefold()
+    return any(lowered.startswith(prefix) for prefix in VOICE_COUNTER_PREFIXES)
+
+
+def add_bot_overwrite(guild: discord.Guild, overwrites: dict) -> None:
+    if guild.me:
+        overwrites[guild.me] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            manage_channels=True,
+            manage_messages=True,
+            connect=True,
+            speak=True,
+        )
+
+
+def private_staff_overwrites(guild: discord.Guild, staff_roles: list[discord.Role]) -> dict:
+    overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+    for role in staff_roles:
+        overwrites[role] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            manage_messages=True,
+            connect=True,
+            speak=True,
+        )
+    add_bot_overwrite(guild, overwrites)
+    return overwrites
+
+
+def read_only_overwrites(guild: discord.Guild, staff_roles: list[discord.Role]) -> dict:
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=False,
+            read_message_history=True,
+        )
+    }
+    for role in staff_roles:
+        overwrites[role] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            manage_messages=True,
+        )
+    add_bot_overwrite(guild, overwrites)
+    return overwrites
+
+
+def voice_counter_overwrites(guild: discord.Guild) -> dict:
+    overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=True, connect=False)}
+    add_bot_overwrite(guild, overwrites)
+    return overwrites
+
+
+def overwrites_for(guild: discord.Guild, category_name: str, channel_name: str, channel_type: str, staff_roles: list[discord.Role]) -> dict | None:
+    if channel_type == "voice" and is_voice_counter(channel_name):
+        return voice_counter_overwrites(guild)
+    if is_staff_area(category_name, channel_name):
+        return private_staff_overwrites(guild, staff_roles)
+    if is_read_only(channel_name):
+        return read_only_overwrites(guild, staff_roles)
+    return None
+
+
+async def update_server_stats(guild: discord.Guild) -> None:
+    staff_roles = roles_by_name(guild, STAFF_ROLE_NAMES)
+    staff_ids = set()
+    for role in staff_roles:
+        staff_ids.update(member.id for member in role.members)
+
+    replacements = {
+        "server members:": f"Server Members: {guild.member_count or 0}",
+        "staff members:": f"Staff Members: {len(staff_ids)}",
+        "boost tier:": f"Boost tier: {guild.premium_tier}",
+    }
+    for channel in guild.voice_channels:
+        lowered = channel.name.casefold()
+        for prefix, new_name in replacements.items():
+            if lowered.startswith(prefix) and channel.name != new_name:
+                try:
+                    await channel.edit(name=new_name, reason="Update server counters")
+                except discord.Forbidden:
+                    pass
+                break
+
+
+@tasks.loop(minutes=30)
+async def stat_counter_loop() -> None:
+    for guild in bot.guilds:
+        await update_server_stats(guild)
+
+
 @bot.event
 async def on_ready() -> None:
     print(f"Logged in as {bot.user} (ID: {bot.user.id if bot.user else 'unknown'})")
+    if not stat_counter_loop.is_running():
+        stat_counter_loop.start()
 
 
 @bot.event
 async def on_member_join(member: discord.Member) -> None:
-    settings = get_settings(member.guild.id)
-    if not settings or not settings["welcome_channel_id"]:
-        return
-
-    channel = member.guild.get_channel(settings["welcome_channel_id"])
-    if isinstance(channel, discord.TextChannel):
-        embed = discord.Embed(
-            title="Welcome!",
-            description=f"Welcome to **{member.guild.name}**, {member.mention}!",
-            color=discord.Color.green(),
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        embed.set_footer(text=f"Member #{member.guild.member_count}")
-        try:
-            await channel.send(embed=embed)
-        except discord.Forbidden:
-            pass
+    await update_server_stats(member.guild)
 
 
 @bot.event
 async def on_member_remove(member: discord.Member) -> None:
-    embed = discord.Embed(
-        title="Member Left",
-        description=f"{member} (`{member.id}`) left the server.",
-        color=discord.Color.red(),
-        timestamp=discord.utils.utcnow(),
-    )
-    await send_log(member.guild, embed)
+    await update_server_stats(member.guild)
 
 
 @bot.tree.command(description="Check whether the bot is responding.")
 async def ping(interaction: discord.Interaction) -> None:
-    await interaction.response.send_message(
-        f"🏓 Pong! `{round(bot.latency * 1000)} ms`"
-    )
-
-
-@bot.tree.command(description="Show information about a server member.")
-@app_commands.describe(member="The member to inspect")
-async def userinfo(
-    interaction: discord.Interaction,
-    member: Optional[discord.Member] = None,
-) -> None:
-    member = member or interaction.user
-    if not isinstance(member, discord.Member):
-        await interaction.response.send_message("Member not found.", ephemeral=True)
-        return
-
-    roles = [role.mention for role in member.roles[1:][-10:]]
-    embed = discord.Embed(
-        title=str(member),
-        color=member.color,
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="User ID", value=str(member.id), inline=False)
-    embed.add_field(
-        name="Account Created",
-        value=discord.utils.format_dt(member.created_at, style="F"),
-        inline=False,
-    )
-    if member.joined_at:
-        embed.add_field(
-            name="Joined Server",
-            value=discord.utils.format_dt(member.joined_at, style="F"),
-            inline=False,
-        )
-    embed.add_field(
-        name="Roles",
-        value=", ".join(roles) if roles else "No roles",
-        inline=False,
-    )
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(f"🏓 Pong! `{round(bot.latency * 1000)} ms`")
 
 
 @bot.tree.command(description="Show information about this Discord server.")
@@ -355,66 +466,13 @@ async def serverinfo(interaction: discord.Interaction) -> None:
     if guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
-
-    embed = discord.Embed(
-        title=guild.name,
-        color=discord.Color.blurple(),
-        timestamp=discord.utils.utcnow(),
-    )
+    embed = discord.Embed(title=guild.name, color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
-    embed.add_field(name="Owner", value=guild.owner.mention if guild.owner else "Unknown")
     embed.add_field(name="Members", value=str(guild.member_count))
     embed.add_field(name="Channels", value=str(len(guild.channels)))
-    embed.add_field(
-        name="Created",
-        value=discord.utils.format_dt(guild.created_at, style="D"),
-        inline=False,
-    )
+    embed.add_field(name="Boost Tier", value=str(guild.premium_tier))
     await interaction.response.send_message(embed=embed)
-
-
-@bot.tree.command(description="Configure the welcome-message channel.")
-@app_commands.checks.has_permissions(manage_guild=True)
-async def setup_welcome(
-    interaction: discord.Interaction, channel: discord.TextChannel
-) -> None:
-    if interaction.guild is None:
-        return
-    upsert_setting(interaction.guild.id, "welcome_channel_id", channel.id)
-    await interaction.response.send_message(
-        f"Welcome messages will be sent in {channel.mention}.", ephemeral=True
-    )
-
-
-@bot.tree.command(description="Configure the moderation log channel.")
-@app_commands.checks.has_permissions(manage_guild=True)
-async def setup_logs(
-    interaction: discord.Interaction, channel: discord.TextChannel
-) -> None:
-    if interaction.guild is None:
-        return
-    upsert_setting(interaction.guild.id, "log_channel_id", channel.id)
-    await interaction.response.send_message(
-        f"Moderation logs will be sent in {channel.mention}.", ephemeral=True
-    )
-
-
-@bot.tree.command(description="Configure the ticket category and support role.")
-@app_commands.checks.has_permissions(manage_guild=True)
-async def setup_tickets(
-    interaction: discord.Interaction,
-    category: discord.CategoryChannel,
-    support_role: discord.Role,
-) -> None:
-    if interaction.guild is None:
-        return
-    upsert_setting(interaction.guild.id, "ticket_category_id", category.id)
-    upsert_setting(interaction.guild.id, "support_role_id", support_role.id)
-    await interaction.response.send_message(
-        f"Tickets will be created under **{category.name}** and visible to {support_role.mention}.",
-        ephemeral=True,
-    )
 
 
 @bot.tree.command(description="Post a button that members can use to create tickets.")
@@ -440,568 +498,15 @@ async def clear(interaction: discord.Interaction, amount: app_commands.Range[int
     await interaction.followup.send(f"Deleted {len(deleted)} messages.", ephemeral=True)
 
 
-@bot.tree.command(description="Warn a member.")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def warn(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    reason: str = "No reason provided",
-) -> None:
-    if interaction.guild is None:
-        return
-    db.execute(
-        "INSERT INTO warnings (guild_id, user_id, moderator_id, reason) VALUES (?, ?, ?, ?)",
-        (interaction.guild.id, member.id, interaction.user.id, reason),
-    )
-    db.commit()
-    try:
-        await member.send(f"You were warned in **{interaction.guild.name}**.\nReason: {reason}")
-    except discord.Forbidden:
-        pass
-    await interaction.response.send_message(
-        f"Warned {member.mention}.", ephemeral=True
-    )
-    await send_log(
-        interaction.guild,
-        moderation_embed("Warning", member, interaction.user, reason),
-    )
-
-
-@bot.tree.command(description="View a member's warnings.")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def warnings(interaction: discord.Interaction, member: discord.Member) -> None:
-    if interaction.guild is None:
-        return
-    rows = db.execute(
-        "SELECT * FROM warnings WHERE guild_id = ? AND user_id = ? ORDER BY id DESC LIMIT 10",
-        (interaction.guild.id, member.id),
-    ).fetchall()
-    if not rows:
-        await interaction.response.send_message(
-            f"{member.mention} has no warnings.", ephemeral=True
-        )
-        return
-
-    lines = [
-        f"`#{row['id']}` — {row['reason']} (moderator ID: `{row['moderator_id']}`)"
-        for row in rows
-    ]
-    embed = discord.Embed(
-        title=f"Warnings for {member}",
-        description="\n".join(lines),
-        color=discord.Color.orange(),
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(description="Temporarily prevent a member from chatting.")
-@app_commands.describe(minutes="Timeout duration in minutes")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def timeout(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    minutes: app_commands.Range[int, 1, 40320],
-    reason: str = "No reason provided",
-) -> None:
-    if interaction.guild is None:
-        return
-    if member.top_role >= interaction.guild.me.top_role:
-        await interaction.response.send_message(
-            "I cannot timeout that member because their role is equal to or above mine.",
-            ephemeral=True,
-        )
-        return
-    await member.timeout(timedelta(minutes=minutes), reason=reason)
-    await interaction.response.send_message(
-        f"Timed out {member.mention} for {minutes} minute(s).", ephemeral=True
-    )
-    await send_log(
-        interaction.guild,
-        moderation_embed(f"Timeout ({minutes} minutes)", member, interaction.user, reason),
-    )
-
-
-@bot.tree.command(description="Kick a member from the server.")
-@app_commands.checks.has_permissions(kick_members=True)
-async def kick(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    reason: str = "No reason provided",
-) -> None:
-    if interaction.guild is None:
-        return
-    await member.kick(reason=reason)
-    await interaction.response.send_message(f"Kicked **{member}**.", ephemeral=True)
-    await send_log(
-        interaction.guild,
-        moderation_embed("Kick", member, interaction.user, reason),
-    )
-
-
-@bot.tree.command(description="Ban a member from the server.")
-@app_commands.checks.has_permissions(ban_members=True)
-async def ban(
-    interaction: discord.Interaction,
-    member: discord.Member,
-    reason: str = "No reason provided",
-) -> None:
-    if interaction.guild is None:
-        return
-    await member.ban(reason=reason, delete_message_seconds=0)
-    await interaction.response.send_message(f"Banned **{member}**.", ephemeral=True)
-    await send_log(
-        interaction.guild,
-        moderation_embed("Ban", member, interaction.user, reason),
-    )
-
-
-
-SERVER_TEMPLATES = {
-    "gaming": {
-        "roles": ["Owner", "Administrator", "Moderator", "Member", "Bot"],
-        "categories": {
-            "START HERE": [
-                ("welcome", "text"),
-                ("rules", "text"),
-                ("announcements", "text"),
-                ("roles", "text"),
-            ],
-            "COMMUNITY": [
-                ("general", "text"),
-                ("media", "text"),
-                ("memes", "text"),
-                ("suggestions", "text"),
-                ("General Voice", "voice"),
-                ("Gaming Voice", "voice"),
-            ],
-            "GAMING": [
-                ("looking-for-group", "text"),
-                ("game-chat", "text"),
-                ("clips-and-highlights", "text"),
-                ("Squad 1", "voice"),
-                ("Squad 2", "voice"),
-            ],
-            "SUPPORT": [
-                ("open-a-ticket", "text"),
-                ("server-help", "text"),
-            ],
-            "STAFF": [
-                ("staff-chat", "text"),
-                ("mod-logs", "text"),
-            ],
-        },
-    },
-    "community": {
-        "roles": ["Owner", "Administrator", "Moderator", "Verified", "Member", "Bot"],
-        "categories": {
-            "START HERE": [
-                ("welcome", "text"),
-                ("rules", "text"),
-                ("announcements", "text"),
-                ("introductions", "text"),
-            ],
-            "COMMUNITY": [
-                ("general", "text"),
-                ("off-topic", "text"),
-                ("photos-and-media", "text"),
-                ("polls", "text"),
-                ("suggestions", "text"),
-                ("Community Voice", "voice"),
-            ],
-            "SUPPORT": [
-                ("open-a-ticket", "text"),
-                ("questions", "text"),
-            ],
-            "STAFF": [
-                ("staff-chat", "text"),
-                ("mod-logs", "text"),
-            ],
-        },
-    },
-    "store": {
-        "roles": ["Owner", "Administrator", "Manager", "Support", "Customer", "Member", "Bot"],
-        "categories": {
-            "About Us": [
-                ("All Members: 0", "voice"),
-                ("Vouches: 0", "voice"),
-                ("ducks-services.com", "voice"),
-            ],
-            "┌──── Information ────┐": [
-                ("📜│rules", "text"),
-                ("📢│announcements", "text"),
-                ("🆕│updates", "text"),
-                ("📦│restocks", "text"),
-            ],
-            "┌──── Support ────┐": [
-                ("📖│support-ticket", "text"),
-                ("❓│faq", "text"),
-                ("🎫│open-a-ticket", "text"),
-            ],
-            "┌──── Chat ────┐": [
-                ("🌎│general", "text"),
-                ("🛟│general-support", "text"),
-                ("🤖│bot-commands", "text"),
-                ("🎥│clips", "text"),
-                ("💻│dma-chat", "text"),
-                ("⭐│reviews", "text"),
-                ("⚙️│configs", "text"),
-                ("🔨│ban-reports", "text"),
-                ("💡│recommendations", "text"),
-            ],
-            "┌──── Staff ────┐": [
-                ("🛡️│staff-chat", "text"),
-                ("📋│mod-logs", "text"),
-            ],
-        },
-    },
-    "business": {
-        "roles": ["Owner", "Administrator", "Manager", "Staff", "Client", "Bot"],
-        "categories": {
-            "INFORMATION": [
-                ("welcome", "text"),
-                ("rules", "text"),
-                ("announcements", "text"),
-                ("services", "text"),
-            ],
-            "CLIENT AREA": [
-                ("general", "text"),
-                ("questions", "text"),
-                ("feedback", "text"),
-                ("Client Meeting", "voice"),
-            ],
-            "SUPPORT": [
-                ("open-a-ticket", "text"),
-                ("support-information", "text"),
-            ],
-            "STAFF": [
-                ("staff-chat", "text"),
-                ("staff-tasks", "text"),
-                ("mod-logs", "text"),
-                ("Staff Meeting", "voice"),
-            ],
-        },
-    },
-}
-
-
-def server_summary(guild: discord.Guild) -> str:
-    categories = []
-    for category in guild.categories:
-        channels = ", ".join(channel.name for channel in category.channels) or "empty"
-        categories.append(f"{category.name}: {channels}")
-    uncategorized = [
-        channel.name
-        for channel in guild.channels
-        if not isinstance(channel, discord.CategoryChannel)
-        and getattr(channel, "category", None) is None
-    ]
-    role_names = [role.name for role in guild.roles if role.name != "@everyone"]
-    return (
-        f"Server: {guild.name}\n"
-        f"Members: {guild.member_count}\n"
-        f"Roles: {', '.join(role_names) or 'none'}\n"
-        f"Categories:\n- " + "\n- ".join(categories or ["none"]) + "\n"
-        f"Uncategorized channels: {', '.join(uncategorized) or 'none'}"
-    )
-
-
-ROLE_PERMISSIONS = {
-    "Owner": discord.Permissions(administrator=True),
-    "Administrator": discord.Permissions(administrator=True),
-    "Moderator": discord.Permissions(
-        manage_messages=True,
-        moderate_members=True,
-        kick_members=True,
-        ban_members=True,
-        manage_nicknames=True,
-        view_audit_log=True,
-    ),
-    "Manager": discord.Permissions(
-        manage_channels=True,
-        manage_messages=True,
-        moderate_members=True,
-        manage_nicknames=True,
-        view_audit_log=True,
-    ),
-    "Staff": discord.Permissions(
-        manage_messages=True,
-        moderate_members=True,
-        view_audit_log=True,
-    ),
-    "Support": discord.Permissions(
-        manage_messages=True,
-        view_audit_log=True,
-    ),
-}
-
-STAFF_ROLE_NAMES = ("Owner", "Administrator", "Manager", "Moderator", "Staff")
-SUPPORT_ROLE_NAMES = ("Support", "Moderator", "Staff", "Manager", "Administrator", "Owner")
-READ_ONLY_CHANNEL_MARKERS = (
-    "welcome",
-    "rules",
-    "announcements",
-    "updates",
-    "restocks",
-    "roles",
-    "services",
-)
-TICKET_CHANNEL_MARKERS = ("open-a-ticket", "support-ticket", "ticket-panel")
-STAFF_CHANNEL_MARKERS = ("staff", "mod-logs", "configs")
-
-
-def desired_role_permissions(name: str) -> discord.Permissions:
-    return ROLE_PERMISSIONS.get(name, discord.Permissions.none())
-
-
-def roles_by_name(guild: discord.Guild, names: tuple[str, ...]) -> list[discord.Role]:
-    roles = []
-    seen = set()
-    for name in names:
-        role = discord.utils.get(guild.roles, name=name)
-        if role and role.id not in seen:
-            roles.append(role)
-            seen.add(role.id)
-    return roles
-
-
-def channel_name_matches(channel_name: str, marker: str) -> bool:
-    lowered = channel_name.casefold()
-    return lowered == marker or lowered.endswith(marker)
-
-
-def category_is_support(category_name: str) -> bool:
-    return "support" in category_name.casefold()
-
-
-def area_is_staff(category_name: str, channel_name: str | None = None) -> bool:
-    value = f"{category_name} {channel_name or ''}".casefold()
-    return any(marker in value for marker in STAFF_CHANNEL_MARKERS)
-
-
-def channel_is_read_only(channel_name: str) -> bool:
-    return any(
-        channel_name_matches(channel_name, marker)
-        for marker in READ_ONLY_CHANNEL_MARKERS
-    )
-
-
-def channel_is_ticket_intake(channel_name: str) -> bool:
-    return any(marker in channel_name.casefold() for marker in TICKET_CHANNEL_MARKERS)
-
-
-def channel_is_voice_counter(category_name: str, channel_name: str) -> bool:
-    if category_name.casefold() != "about us":
-        return False
-
-    lowered = channel_name.casefold()
-    return (
-        lowered.startswith("all members:")
-        or lowered.startswith("vouches:")
-        or ".com" in lowered
-    )
-
-
-def add_bot_overwrite(
-    guild: discord.Guild,
-    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite],
-) -> None:
-    if guild.me is None:
-        return
-
-    overwrites[guild.me] = discord.PermissionOverwrite(
-        view_channel=True,
-        send_messages=True,
-        read_message_history=True,
-        manage_channels=True,
-        manage_messages=True,
-        connect=True,
-        speak=True,
-    )
-
-
-def staff_overwrites(
-    guild: discord.Guild,
-    staff_roles: list[discord.Role],
-) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
-    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False)
-    }
-    for role in staff_roles:
-        overwrites[role] = discord.PermissionOverwrite(
-            view_channel=True,
-            send_messages=True,
-            read_message_history=True,
-            manage_messages=True,
-            connect=True,
-            speak=True,
-        )
-    add_bot_overwrite(guild, overwrites)
-    return overwrites
-
-
-def support_overwrites(
-    guild: discord.Guild,
-    support_roles: list[discord.Role],
-) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
-    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
-        guild.default_role: discord.PermissionOverwrite(
-            view_channel=True,
-            send_messages=True,
-            read_message_history=True,
-        )
-    }
-    for role in support_roles:
-        overwrites[role] = discord.PermissionOverwrite(
-            view_channel=True,
-            send_messages=True,
-            read_message_history=True,
-            attach_files=True,
-            manage_messages=True,
-        )
-    add_bot_overwrite(guild, overwrites)
-    return overwrites
-
-
-def read_only_overwrites(
-    guild: discord.Guild,
-    staff_roles: list[discord.Role],
-) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
-    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
-        guild.default_role: discord.PermissionOverwrite(
-            view_channel=True,
-            send_messages=False,
-            read_message_history=True,
-        )
-    }
-    for role in staff_roles:
-        overwrites[role] = discord.PermissionOverwrite(
-            view_channel=True,
-            send_messages=True,
-            read_message_history=True,
-            manage_messages=True,
-        )
-    add_bot_overwrite(guild, overwrites)
-    return overwrites
-
-
-def voice_counter_overwrites(
-    guild: discord.Guild,
-) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite]:
-    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
-        guild.default_role: discord.PermissionOverwrite(
-            view_channel=True,
-            connect=False,
-        )
-    }
-    add_bot_overwrite(guild, overwrites)
-    return overwrites
-
-
-def category_overwrites(
-    guild: discord.Guild,
-    category_name: str,
-    staff_roles: list[discord.Role],
-    support_roles: list[discord.Role],
-) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite] | None:
-    if area_is_staff(category_name):
-        return staff_overwrites(guild, staff_roles)
-    if category_is_support(category_name):
-        return support_overwrites(guild, support_roles)
-    return None
-
-
-def channel_overwrites(
-    guild: discord.Guild,
-    category_name: str,
-    channel_name: str,
-    channel_type: str,
-    staff_roles: list[discord.Role],
-    support_roles: list[discord.Role],
-) -> dict[discord.abc.Snowflake, discord.PermissionOverwrite] | None:
-    if area_is_staff(category_name, channel_name):
-        return staff_overwrites(guild, staff_roles)
-    if channel_is_ticket_intake(channel_name):
-        return read_only_overwrites(guild, support_roles)
-    if channel_type == "voice" and channel_is_voice_counter(category_name, channel_name):
-        return voice_counter_overwrites(guild)
-    if channel_type == "text" and channel_is_read_only(channel_name):
-        return read_only_overwrites(guild, staff_roles)
-    return None
-
-
-async def apply_overwrites_if_changed(
-    target: discord.CategoryChannel | discord.TextChannel | discord.VoiceChannel,
-    overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] | None,
-) -> bool:
-    if overwrites is None or target.overwrites == overwrites:
-        return False
-
-    await target.edit(
-        overwrites=overwrites,
-        reason="Updated by the smart server builder",
-    )
-    return True
-
-
-def find_category_containing(guild: discord.Guild, marker: str) -> discord.CategoryChannel | None:
-    marker = marker.casefold()
-    return discord.utils.find(
-        lambda category: marker in category.name.casefold(),
-        guild.categories,
-    )
-
-
-def find_text_channel_by_marker(guild: discord.Guild, marker: str) -> discord.TextChannel | None:
-    marker = marker.casefold()
-    return discord.utils.find(
-        lambda channel: channel.name.casefold() == marker
-        or channel.name.casefold().endswith(marker),
-        guild.text_channels,
-    )
-
-
-async def get_or_create_role(
-    guild: discord.Guild,
-    name: str,
-    update_existing: bool = False,
-) -> tuple[discord.Role, bool, bool]:
-    existing = discord.utils.get(guild.roles, name=name)
-    permissions = desired_role_permissions(name)
-
-    if existing:
-        can_edit = (
-            update_existing
-            and guild.me is not None
-            and not existing.managed
-            and existing < guild.me.top_role
-        )
-        if can_edit and existing.permissions != permissions:
-            await existing.edit(
-                permissions=permissions,
-                reason="Updated by the smart server builder",
-            )
-            return existing, False, True
-        return existing, False, False
-
-    role = await guild.create_role(
-        name=name,
-        permissions=permissions,
-        reason="Created by the smart server builder",
-    )
-    return role, True, False
-
-
-@bot.tree.command(description="Build an organized server layout from a template.")
+@bot.tree.command(description="Build channels and roles from a template.")
 @app_commands.describe(
     template="Choose the server layout to build",
-    keep_existing="Preserve existing matching channels and permissions",
+    keep_existing="Keep existing matching channels and permissions",
 )
 @app_commands.choices(
     template=[
-        app_commands.Choice(name="Gaming server", value="gaming"),
-        app_commands.Choice(name="Community server", value="community"),
-        app_commands.Choice(name="Business server", value="business"),
-        app_commands.Choice(name="Store / services server", value="store"),
+        app_commands.Choice(name="Agency style server", value="agency"),
+        app_commands.Choice(name="Simple server", value="simple"),
     ]
 )
 @app_commands.checks.has_permissions(administrator=True)
@@ -1018,362 +523,81 @@ async def build_server(
     await interaction.response.defer(ephemeral=True, thinking=True)
     layout = SERVER_TEMPLATES[template.value]
     created_roles = 0
-    updated_permissions = 0
     created_categories = 0
     created_text_channels = 0
     created_voice_channels = 0
+    updated_permissions = 0
 
     try:
         for role_name in reversed(layout["roles"]):
-            _, created, updated = await get_or_create_role(
-                guild,
-                role_name,
-                update_existing=not keep_existing,
-            )
-            created_roles += int(created)
-            updated_permissions += int(updated)
+            existing = discord.utils.get(guild.roles, name=role_name)
+            permissions = ROLE_PERMISSIONS.get(role_name, discord.Permissions.none())
+            if existing is None:
+                await guild.create_role(name=role_name, permissions=permissions, reason="Created by server builder")
+                created_roles += 1
+            elif not keep_existing and guild.me and existing < guild.me.top_role and not existing.managed:
+                if existing.permissions != permissions:
+                    await existing.edit(permissions=permissions, reason="Updated by server builder")
+                    updated_permissions += 1
 
         staff_roles = roles_by_name(guild, STAFF_ROLE_NAMES)
-        support_roles = roles_by_name(guild, SUPPORT_ROLE_NAMES)
 
         for category_name, channels in layout["categories"].items():
             category = discord.utils.get(guild.categories, name=category_name)
-            overwrites = category_overwrites(
-                guild,
-                category_name,
-                staff_roles,
-                support_roles,
-            )
+            category_overwrites = private_staff_overwrites(guild, staff_roles) if is_staff_area(category_name) else None
             if category is None:
                 category = await guild.create_category(
                     category_name,
-                    overwrites=overwrites,
-                    reason="Created by the smart server builder",
+                    overwrites=category_overwrites,
+                    reason="Created by server builder",
                 )
                 created_categories += 1
-            elif not keep_existing:
-                updated_permissions += int(
-                    await apply_overwrites_if_changed(category, overwrites)
-                )
+            elif not keep_existing and category_overwrites and category.overwrites != category_overwrites:
+                await category.edit(overwrites=category_overwrites, reason="Updated by server builder")
+                updated_permissions += 1
 
             for channel_name, channel_type in channels:
                 existing = discord.utils.get(category.channels, name=channel_name)
-                overwrites = channel_overwrites(
-                    guild,
-                    category_name,
-                    channel_name,
-                    channel_type,
-                    staff_roles,
-                    support_roles,
-                )
+                channel_overwrites = overwrites_for(guild, category_name, channel_name, channel_type, staff_roles)
                 if existing:
-                    if not keep_existing and isinstance(
-                        existing,
-                        (discord.TextChannel, discord.VoiceChannel),
-                    ):
-                        updated_permissions += int(
-                            await apply_overwrites_if_changed(existing, overwrites)
-                        )
+                    if not keep_existing and channel_overwrites and existing.overwrites != channel_overwrites:
+                        await existing.edit(overwrites=channel_overwrites, reason="Updated by server builder")
+                        updated_permissions += 1
                     continue
 
                 if channel_type == "voice":
                     await guild.create_voice_channel(
                         channel_name,
                         category=category,
-                        overwrites=overwrites,
-                        reason="Created by the smart server builder",
+                        overwrites=channel_overwrites,
+                        reason="Created by server builder",
                     )
                     created_voice_channels += 1
                 else:
                     await guild.create_text_channel(
                         channel_name,
                         category=category,
-                        overwrites=overwrites,
-                        reason="Created by the smart server builder",
+                        overwrites=channel_overwrites,
+                        reason="Created by server builder",
                     )
                     created_text_channels += 1
 
-        # Automatically connect existing bot systems to common channels.
-        welcome = find_text_channel_by_marker(guild, "welcome")
-        logs = find_text_channel_by_marker(guild, "mod-logs")
-        support_category = find_category_containing(guild, "support")
-        support_role = support_roles[0] if support_roles else None
-        if welcome:
-            upsert_setting(guild.id, "welcome_channel_id", welcome.id)
-        if logs:
-            upsert_setting(guild.id, "log_channel_id", logs.id)
-        if support_category:
-            upsert_setting(guild.id, "ticket_category_id", support_category.id)
-        if support_role:
-            upsert_setting(guild.id, "support_role_id", support_role.id)
-
-        rules_channel = find_text_channel_by_marker(guild, "rules")
-        if rules_channel and not any(
-            message.author == guild.me
-            async for message in rules_channel.history(limit=10)
-        ):
-            rules_embed = discord.Embed(
-                title=f"{guild.name} Rules",
-                description=(
-                    "1. Treat everyone with respect.\n"
-                    "2. No harassment, hate speech, threats, or excessive toxicity.\n"
-                    "3. No spam, scams, malicious links, or unwanted advertising.\n"
-                    "4. Keep content in the correct channels.\n"
-                    "5. Do not share private information.\n"
-                    "6. Follow Discord's Terms of Service and staff instructions."
-                ),
-                color=discord.Color.blurple(),
-            )
-            await rules_channel.send(embed=rules_embed)
-
-        if template.value == "store":
-            await update_store_stats(guild)
+        await update_server_stats(guild)
 
         await interaction.followup.send(
             f"✅ **{template.name} created.**\n"
             f"New roles: **{created_roles}**\n"
-            f"Permission updates: **{updated_permissions}**\n"
             f"New categories: **{created_categories}**\n"
             f"New text channels: **{created_text_channels}**\n"
-            f"New voice channels: **{created_voice_channels}**\n\n"
-            + (
-                "Existing matching channels and permissions were left unchanged."
-                if keep_existing
-                else "Existing matching roles, categories, and channels had builder permissions refreshed."
-            ),
+            f"New voice channels: **{created_voice_channels}**\n"
+            f"Permission updates: **{updated_permissions}**",
             ephemeral=True,
         )
     except discord.Forbidden:
         await interaction.followup.send(
-            "I could not finish because my role needs **Manage Roles** and **Manage Channels**. "
-            "Move the bot role above the roles it manages.",
+            "I could not finish. Give the bot **Manage Roles** and **Manage Channels**, then move the bot role above the roles it manages.",
             ephemeral=True,
         )
 
 
-@bot.tree.command(description="Inspect your server and recommend organization improvements.")
-@app_commands.checks.has_permissions(manage_guild=True)
-async def server_audit(interaction: discord.Interaction) -> None:
-    guild = interaction.guild
-    if guild is None:
-        return
-
-    findings = []
-    text_names = {channel.name.lower() for channel in guild.text_channels}
-
-    essentials = {
-        "rules": "Add a read-only rules channel.",
-        "welcome": "Add a welcome channel for new members.",
-        "announcements": "Add an announcements channel for important updates.",
-        "mod-logs": "Add a private moderation log channel.",
-        "open-a-ticket": "Add a ticket panel channel for support.",
-    }
-    for channel_name, recommendation in essentials.items():
-        if channel_name not in text_names:
-            findings.append(f"• **Missing #{channel_name}:** {recommendation}")
-
-    uncategorized = [
-        channel for channel in guild.channels
-        if not isinstance(channel, discord.CategoryChannel)
-        and getattr(channel, "category", None) is None
-    ]
-    if len(uncategorized) > 3:
-        findings.append(
-            f"• **{len(uncategorized)} uncategorized channels:** Move them into clear categories."
-        )
-
-    empty_categories = [category.name for category in guild.categories if not category.channels]
-    if empty_categories:
-        findings.append(
-            f"• **Empty categories:** {', '.join(empty_categories[:8])}. Remove or use them."
-        )
-
-    duplicate_names = {}
-    for channel in guild.channels:
-        duplicate_names[channel.name] = duplicate_names.get(channel.name, 0) + 1
-    duplicates = [name for name, count in duplicate_names.items() if count > 1]
-    if duplicates:
-        findings.append(
-            f"• **Duplicate channel names:** {', '.join(duplicates[:8])}."
-        )
-
-    admin_roles = [
-        role.name for role in guild.roles
-        if role.permissions.administrator and role.name != "@everyone"
-    ]
-    if len(admin_roles) > 3:
-        findings.append(
-            f"• **Many administrator roles ({len(admin_roles)}):** Review them and use least privilege."
-        )
-
-    if not findings:
-        findings.append("✅ The basic server structure looks organized.")
-
-    embed = discord.Embed(
-        title=f"Organization Audit — {guild.name}",
-        description="\n".join(findings[:15]),
-        color=discord.Color.green() if findings[0].startswith("✅") else discord.Color.orange(),
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.add_field(
-        name="Current size",
-        value=(
-            f"{len(guild.categories)} categories • "
-            f"{len(guild.text_channels)} text channels • "
-            f"{len(guild.voice_channels)} voice channels • "
-            f"{len(guild.roles) - 1} roles"
-        ),
-        inline=False,
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(description="Create or replace a clean rules message.")
-@app_commands.checks.has_permissions(manage_guild=True)
-async def create_rules(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-) -> None:
-    guild = interaction.guild
-    if guild is None:
-        return
-
-    embed = discord.Embed(
-        title=f"{guild.name} Rules",
-        description=(
-            "**1. Respect everyone**\n"
-            "No harassment, discrimination, threats, or targeted abuse.\n\n"
-            "**2. Keep the server safe**\n"
-            "No scams, malware, doxxing, or malicious links.\n\n"
-            "**3. Avoid spam**\n"
-            "Do not flood chats, mass mention users, or advertise without permission.\n\n"
-            "**4. Use the correct channels**\n"
-            "Keep discussions and media in their intended areas.\n\n"
-            "**5. Follow staff directions**\n"
-            "Moderators may act to protect the server even when a situation is not listed exactly.\n\n"
-            "**6. Follow Discord's Terms of Service**"
-        ),
-        color=discord.Color.blurple(),
-        timestamp=discord.utils.utcnow(),
-    )
-    await channel.send(embed=embed)
-    await interaction.response.send_message(
-        f"Rules posted in {channel.mention}.", ephemeral=True
-    )
-
-
-@bot.tree.command(description="Ask the optional AI organizer how to improve your server.")
-@app_commands.describe(question="What do you want help organizing or creating?")
-@app_commands.checks.has_permissions(manage_guild=True)
-async def ask_organizer(interaction: discord.Interaction, question: str) -> None:
-    guild = interaction.guild
-    if guild is None:
-        return
-    if ai_client is None:
-        await interaction.response.send_message(
-            "AI mode is not configured. Add `OPENAI_API_KEY` to your `.env` file, "
-            "install the updated requirements, and restart the bot.",
-            ephemeral=True,
-        )
-        return
-
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    try:
-        response = await ai_client.responses.create(
-            model=AI_MODEL,
-            instructions=(
-                "You are a Discord server organization assistant. Give practical, safe, "
-                "concise recommendations. Do not claim you changed the server. Base your "
-                "answer on the supplied server structure. Limit the response to 1,500 characters."
-            ),
-            input=(
-                f"{server_summary(guild)}\n\n"
-                f"Administrator's question: {question}"
-            ),
-            max_output_tokens=500,
-        )
-        answer = response.output_text.strip()
-        await interaction.followup.send(answer[:1900], ephemeral=True)
-    except Exception as exc:
-        print(f"AI organizer error: {type(exc).__name__}: {exc}")
-        await interaction.followup.send(
-            "The AI request failed. Check the API key, model name, package installation, and bot console.",
-            ephemeral=True,
-        )
-
-
-async def update_store_stats(guild: discord.Guild) -> None:
-    about = discord.utils.get(guild.categories, name="About Us")
-    if about is None:
-        return
-
-    member_channel = next(
-        (c for c in about.voice_channels if c.name.startswith("All Members:")),
-        None,
-    )
-    vouch_channel = next(
-        (c for c in about.voice_channels if c.name.startswith("Vouches:")),
-        None,
-    )
-
-    if member_channel:
-        desired = f"All Members: {guild.member_count or 0}"
-        if member_channel.name != desired:
-            try:
-                await member_channel.edit(name=desired, reason="Updating member counter")
-            except discord.Forbidden:
-                pass
-
-    if vouch_channel:
-        reviews = discord.utils.find(
-            lambda c: isinstance(c, discord.TextChannel)
-            and c.name in {"⭐│reviews", "reviews"},
-            guild.channels,
-        )
-        count = 0
-        if isinstance(reviews, discord.TextChannel):
-            try:
-                async for _ in reviews.history(limit=None):
-                    count += 1
-            except discord.Forbidden:
-                pass
-
-        desired = f"Vouches: {count}"
-        if vouch_channel.name != desired:
-            try:
-                await vouch_channel.edit(name=desired, reason="Updating vouch counter")
-            except discord.Forbidden:
-                pass
-
-
-@bot.tree.command(description="Refresh the member and vouch counter channels.")
-@app_commands.checks.has_permissions(manage_guild=True)
-async def update_stats(interaction: discord.Interaction) -> None:
-    if interaction.guild is None:
-        return
-    await interaction.response.defer(ephemeral=True)
-    await update_store_stats(interaction.guild)
-    await interaction.followup.send("Server statistics updated.", ephemeral=True)
-
-
-@bot.tree.error
-async def on_app_command_error(
-    interaction: discord.Interaction, error: app_commands.AppCommandError
-) -> None:
-    if isinstance(error, app_commands.MissingPermissions):
-        message = "You do not have permission to use that command."
-    elif isinstance(error, app_commands.BotMissingPermissions):
-        message = "I am missing a required server permission."
-    else:
-        original = getattr(error, "original", error)
-        print(f"Command error: {type(original).__name__}: {original}")
-        message = "The command failed. Check the bot console for details."
-
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=True)
-    else:
-        await interaction.response.send_message(message, ephemeral=True)
-
-
-if __name__ == "__main__":
-    bot.run(TOKEN, log_handler=None)
+bot.run(TOKEN)
