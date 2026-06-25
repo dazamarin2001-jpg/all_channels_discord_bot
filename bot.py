@@ -14,6 +14,7 @@ if not TOKEN:
 intents = discord.Intents.default()
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+bot.synced_commands_once = False
 
 STAFF_ROLE_NAMES = (
     "Founder", "Foundation Advisor", "Supreme Command", "Elite Command",
@@ -197,6 +198,16 @@ async def stat_loop() -> None:
 @bot.event
 async def on_ready() -> None:
     print(f"Logged in as {bot.user} (ID: {bot.user.id if bot.user else 'unknown'})")
+    if not bot.synced_commands_once:
+        if TEST_GUILD_ID:
+            guild_object = discord.Object(id=int(TEST_GUILD_ID))
+            bot.tree.copy_global_to(guild=guild_object)
+            await bot.tree.sync(guild=guild_object)
+            print(f"Commands synced instantly to test server {TEST_GUILD_ID}.")
+        else:
+            await bot.tree.sync()
+            print("Global commands synced. Discord may take time to display them.")
+        bot.synced_commands_once = True
     if not stat_loop.is_running():
         stat_loop.start()
 
@@ -221,7 +232,12 @@ async def build_server(interaction: discord.Interaction, template: app_commands.
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
 
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+    except discord.NotFound:
+        print("Build server interaction expired before it could be acknowledged. Run /build_server again.")
+        return
+
     roles = AGENCY_ROLES if template.value == "agency" else SIMPLE_ROLES
     channels = AGENCY_CHANNELS if template.value == "agency" else SIMPLE_CHANNELS
 
@@ -286,10 +302,5 @@ async def build_server(interaction: discord.Interaction, template: app_commands.
         await interaction.followup.send(f"Error: {type(exc).__name__}: {exc}", ephemeral=True)
         raise
 
-
-if TEST_GUILD_ID:
-    @bot.event
-    async def setup_guild_commands_on_connect() -> None:
-        pass
 
 bot.run(TOKEN)
