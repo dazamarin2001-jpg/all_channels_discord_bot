@@ -97,6 +97,20 @@ SIMPLE_CHANNELS = {
     "STAFF": [("staff-chat", "text"), ("mod-logs", "text")],
 }
 
+OLD_LAYOUT_CATEGORIES = {
+    "COMMUNITY",
+    "GAMING",
+    "SUPPORT",
+    "STAFF",
+    "INFORMATION",
+    "CLIENT AREA",
+    "About Us",
+    "┌──── Information ────┐",
+    "┌──── Support ────┐",
+    "┌──── Chat ────┐",
+    "┌──── Staff ────┐",
+}
+
 READ_ONLY_MARKERS = (
     "rules", "announcements", "updates", "pay-announcements", "event-announcements",
     "broadcasting-announcements", "donation-shoutout", "applications-and-quizzes",
@@ -300,6 +314,48 @@ async def build_server(interaction: discord.Interaction, template: app_commands.
         )
     except Exception as exc:
         await interaction.followup.send(f"Error: {type(exc).__name__}: {exc}", ephemeral=True)
+        raise
+
+
+@bot.tree.command(description="Remove old template categories after confirming.")
+@app_commands.describe(confirm="Type DELETE to confirm", include_start_here="Also remove START HERE")
+@app_commands.checks.has_permissions(administrator=True)
+async def delete_old_layout(interaction: discord.Interaction, confirm: str, include_start_here: bool = False) -> None:
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        return
+    if confirm != "DELETE":
+        await interaction.response.send_message("Type DELETE in the confirm field to run cleanup.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    names_to_remove = set(OLD_LAYOUT_CATEGORIES)
+    if include_start_here:
+        names_to_remove.add("START HERE")
+
+    removed_channels = 0
+    removed_categories = 0
+    try:
+        for category in list(guild.categories):
+            if category.name not in names_to_remove:
+                continue
+            for channel in list(category.channels):
+                await channel.delete(reason="Removed old layout")
+                removed_channels += 1
+            await category.delete(reason="Removed old layout")
+            removed_categories += 1
+
+        await interaction.followup.send(
+            f"Old layout cleanup done. Removed categories: {removed_categories}, removed channels: {removed_channels}.",
+            ephemeral=True,
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "I need Manage Channels permission to remove the old layout.", ephemeral=True
+        )
+    except Exception as exc:
+        await interaction.followup.send(f"Cleanup error: {type(exc).__name__}: {exc}", ephemeral=True)
         raise
 
 
