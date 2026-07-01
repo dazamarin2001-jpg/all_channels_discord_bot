@@ -149,7 +149,7 @@ def build_ai_answer(question: str, author_name: str, guild_name: str) -> str:
 
     website_context = get_ai_website_context()
     website_note = (
-        "Use the website context first when it answers the question. Include a short Source line when website context was used. "
+        "Use the website context first when it answers the question, but never show the source URL, source name, citations, or any 'Source:' line in the final Discord reply. "
         "If the website context does not answer it, answer as a normal helpful assistant."
         if website_context else
         "No website context is configured, so answer as a normal helpful assistant."
@@ -162,6 +162,7 @@ def build_ai_answer(question: str, author_name: str, guild_name: str) -> str:
         "For general questions, answer normally. "
         "Do not reveal secrets, tokens, private keys, or credentials. "
         "Do not help with malware, credential theft, cheating tools, bypassing bans, or harmful exploitation. "
+        "Never include source links, source names, citations, or a 'Source:' line in your final answer. "
         + website_note
     )
 
