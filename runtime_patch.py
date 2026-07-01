@@ -19,7 +19,7 @@ s = s.replace(
     'TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")\n'
     'OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")\n'
     'AI_MODEL = os.getenv("AI_MODEL", "gpt-5.5")\n'
-    'AI_WEBSITE_URLS_RAW = os.getenv("AI_WEBSITE_URLS") or os.getenv("WEBSITE_URL") or os.getenv("HELP_WEBSITE_URL") or ""\n'
+    'AI_WEBSITE_URLS_RAW = os.getenv("AI_WEBSITE_URLS") or os.getenv("WEBSITE_URL") or os.getenv("HELP_WEBSITE_URL") or "https://fsa-habbo.com/"\n'
     'AI_WEBSITE_URLS = [url.strip() for url in AI_WEBSITE_URLS_RAW.split(",") if url.strip()]\n'
     'AI_SITE_CACHE_SECONDS = int(os.getenv("AI_SITE_CACHE_SECONDS", "600"))\n',
 )
@@ -138,12 +138,17 @@ def get_ai_website_context() -> str:
         except Exception as exc:
             parts.append(f"SOURCE: {url}\nCould not read this page: {type(exc).__name__}")
 
+    parts.append("FSA known info: Pay timings are 1:00 AM, 4:00 AM, 7:00 AM, 1:00 PM, 4:00 PM, and 7:00 PM GMT.")
     AI_SITE_CACHE["text"] = "\n\n---\n\n".join(parts)[:50000]
     AI_SITE_CACHE["expires"] = now + AI_SITE_CACHE_SECONDS
     return AI_SITE_CACHE["text"]
 
 
 def build_ai_answer(question: str, author_name: str, guild_name: str) -> str:
+    q = question.casefold()
+    if "pay" in q and any(word in q for word in ("time", "timing", "timings", "schedule", "when")):
+        return "Pay timings are **1:00 AM, 4:00 AM, 7:00 AM, 1:00 PM, 4:00 PM, and 7:00 PM GMT**."
+
     if AI_CLIENT is None:
         return "AI is not set up yet. Add OPENAI_API_KEY in Railway Variables, then redeploy me."
 
