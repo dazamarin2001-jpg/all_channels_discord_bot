@@ -25,15 +25,12 @@ TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")
 
 RANK_SALES_HEADERS = [
     "Timestamp",
-    "Seller Discord",
-    "Seller ID",
+    "Discord Seller",
     "Seller Habbo",
     "Buyer",
-    "Rank",
+    "Rank Sold",
     "Amount",
-    "Proof/Notes",
-    "Channel",
-    "Channel ID",
+    "Proof / Notes",
 ]
 
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -145,17 +142,9 @@ SIMPLE_CHANNELS = {
 }
 
 OLD_LAYOUT_CATEGORIES = {
-    "COMMUNITY",
-    "GAMING",
-    "SUPPORT",
-    "STAFF",
-    "INFORMATION",
-    "CLIENT AREA",
-    "About Us",
-    "┌──── Information ────┐",
-    "┌──── Support ────┐",
-    "┌──── Chat ────┐",
-    "┌──── Staff ────┐",
+    "COMMUNITY", "GAMING", "SUPPORT", "STAFF", "INFORMATION", "CLIENT AREA",
+    "About Us", "┌──── Information ────┐", "┌──── Support ────┐",
+    "┌──── Chat ────┐", "┌──── Staff ────┐",
 }
 
 READ_ONLY_MARKERS = (
@@ -214,19 +203,15 @@ class RankSaleModal(discord.ui.Modal, title="Log Rank Sale"):
             proof = str(self.proof.value).strip() or "N/A"
 
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
-            channel_name = getattr(interaction.channel, "name", "Unknown")
 
             row = [
                 timestamp,
                 str(interaction.user),
-                str(interaction.user.id),
                 seller_habbo,
                 buyer,
                 rank,
                 amount,
                 proof,
-                channel_name,
-                str(interaction.channel_id),
             ]
 
             await asyncio.to_thread(append_rank_sale_to_sheet, row)
@@ -244,8 +229,9 @@ class RankSaleModal(discord.ui.Modal, title="Log Rank Sale"):
             embed.add_field(name="Proof / Notes", value=proof, inline=False)
 
             log_channel = await get_rank_sales_channel(interaction.guild)
-            if log_channel:
-                await log_channel.send(embed=embed)
+            if log_channel is None:
+                raise RuntimeError("RANK_SALES_CHANNEL_ID is missing, wrong, or the bot cannot see that channel.")
+            await log_channel.send(embed=embed)
 
             await interaction.followup.send("Rank sale logged successfully.", ephemeral=True)
         except Exception as exc:
@@ -330,17 +316,139 @@ def get_rank_sales_worksheet():
         worksheet = spreadsheet.worksheet(RANK_SALES_SHEET_NAME)
     except gspread.WorksheetNotFound:
         worksheet = spreadsheet.add_worksheet(title=RANK_SALES_SHEET_NAME, rows=1000, cols=len(RANK_SALES_HEADERS))
-        worksheet.append_row(RANK_SALES_HEADERS)
-
-    if not worksheet.row_values(1):
-        worksheet.append_row(RANK_SALES_HEADERS)
 
     return worksheet
 
 
+def clean_rank_sales_rows(values: list[list[str]]) -> list[list[str]]:
+    cleaned = [RANK_SALES_HEADERS]
+    if not values:
+        return cleaned
+
+    old_header = [cell.strip().casefold() for cell in values[0]]
+    has_old_private_columns = "seller id" in old_header or "channel id" in old_header or "channel" in old_header
+
+    for row in values[1:]:
+        if not any(str(cell).strip() for cell in row):
+            continue
+
+        padded = list(row) + [""] * 12
+        if has_old_private_columns:
+            cleaned.append([
+                padded[0],  # Timestamp
+                padded[1],  # Discord Seller
+                padded[3],  # Seller Habbo
+                padded[4],  # Buyer
+                padded[5],  # Rank Sold
+                padded[6],  # Amount
+                padded[7],  # Proof / Notes
+            ])
+        else:
+            cleaned.append(padded[:len(RANK_SALES_HEADERS)])
+
+    return cleaned
+
+
+def apply_rank_sales_sheet_style(worksheet) -> None:
+    try:
+        worksheet.format("A1:G1", {
+            "backgroundColor": {"red": 0.18, "green": 0.08, "blue": 0.36},
+            "textFormat": {
+                "foregroundColor": {"red": 1, "green": 1, "blue": 1},
+                "bold": True,
+                "fontSize": 11,
+            },
+            "horizontalAlignment": "CENTER",
+            "verticalAlignment": "MIDDLE",
+        })
+        worksheet.format("A2:G1000", {
+            "backgroundColor": {"red": 0.97, "green": 0.95, "blue": 1.0},
+            "textFormat": {"foregroundColor": {"red": 0.08, "green": 0.08, "blue": 0.12}},
+            "verticalAlignment": "MIDDLE",
+        })
+        worksheet.format("G:G", {"wrapStrategy": "WRAP", "horizontalAlignment": "LEFT"})
+        worksheet.format("A:F", {"horizontalAlignment": "CENTER"})
+
+        try:
+            worksheet.freeze(rows=1)
+        except Exception:
+            worksheet.spreadsheet.batch_update({
+                "requests": [{
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": worksheet.id,
+                            "gridProperties": {"frozenRowCount": 1},
+                        },
+                        "fields": "gridProperties.frozenRowCount",
+                    }
+                }]
+            })
+
+        try:
+            worksheet.columns_auto_resize(0, 7)
+        except Exception:
+            worksheet.spreadsheet.batch_update({
+                "requests": [{
+                    "autoResizeDimensions": {
+                        "dimensions": {
+                            "sheetId": worksheet.id,
+                            "dimension": "COLUMNS",
+                            "startIndex": 0,
+                            "endIndex": 7,
+                        }
+                    }
+                }]
+            })
+
+        worksheet.spreadsheet.batch_update({
+            "requests": [{
+                "updateDimensionProperties": {
+                    "range": {
+                        "sheetId": worksheet.id,
+                        "dimension": "COLUMNS",
+                        "startIndex": 6,
+                        "endIndex": 7,
+                    },
+                    "properties": {"pixelSize": 350},
+                    "fields": "pixelSize",
+                }
+            }]
+        })
+    except Exception as exc:
+        print(f"Rank sales sheet style warning: {type(exc).__name__}: {exc}")
+
+
+def setup_rank_sales_sheet_layout() -> None:
+    worksheet = get_rank_sales_worksheet()
+    values = worksheet.get_all_values()
+    cleaned = clean_rank_sales_rows(values)
+
+    worksheet.clear()
+    worksheet.update(range_name="A1", values=cleaned, value_input_option="USER_ENTERED")
+
+    try:
+        worksheet.batch_clear(["H:Z"])
+    except Exception:
+        pass
+
+    apply_rank_sales_sheet_style(worksheet)
+
+
 def append_rank_sale_to_sheet(row: list[str]) -> None:
     worksheet = get_rank_sales_worksheet()
+    values = worksheet.get_all_values()
+    current_header = values[0][:len(RANK_SALES_HEADERS)] if values else []
+    old_header = [cell.strip().casefold() for cell in values[0]] if values else []
+
+    if current_header != RANK_SALES_HEADERS or "seller id" in old_header or "channel id" in old_header or "channel" in old_header:
+        setup_rank_sales_sheet_layout()
+        worksheet = get_rank_sales_worksheet()
+    elif not values:
+        worksheet.update(range_name="A1", values=[RANK_SALES_HEADERS], value_input_option="USER_ENTERED")
+        apply_rank_sales_sheet_style(worksheet)
+
     worksheet.append_row(row, value_input_option="USER_ENTERED")
+    apply_rank_sales_sheet_style(worksheet)
 
 
 async def get_rank_sales_channel(guild: discord.Guild | None):
@@ -453,6 +561,21 @@ async def rank_sale(interaction: discord.Interaction) -> None:
         return
 
     await interaction.response.send_modal(RankSaleModal())
+
+
+@bot.tree.command(name="setup-rank-sales-sheet", description="Clean and style the rank sales Google Sheet.")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_rank_sales_sheet(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await asyncio.to_thread(setup_rank_sales_sheet_layout)
+        await interaction.followup.send(
+            "Rank Sales sheet cleaned and styled. Columns are now: Timestamp, Discord Seller, Seller Habbo, Buyer, Rank Sold, Amount, Proof / Notes.",
+            ephemeral=True,
+        )
+    except Exception as exc:
+        print(f"Rank sales sheet setup error: {type(exc).__name__}: {exc}")
+        await interaction.followup.send(f"Could not setup sheet: {type(exc).__name__}: {exc}", ephemeral=True)
 
 
 @bot.tree.command(description="Build channels and roles from a template.")
