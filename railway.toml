@@ -1,4 +1,4 @@
 [deploy]
-startCommand = "python bot.py"
+startCommand = "python -c \"from pathlib import Path;p=Path('bot.py');s=p.read_text(encoding='utf-8');old='\\n@app_commands.checks.has_permissions(administrator=True)\\nasync def setup_rank_sales_sheet(interaction: discord.Interaction) -> None:\\n    await interaction.response.defer(ephemeral=True, thinking=True)';new='\\nasync def setup_rank_sales_sheet(interaction: discord.Interaction) -> None:\\n    if not any(getattr(r, \\\"name\\\", \\\"\\\") == \\\"Chat Moderator\\\" for r in getattr(interaction.user, \\\"roles\\\", [])):\\n        await interaction.response.send_message(\\\"Only Chat Moderator can use this command.\\\", ephemeral=True)\\n        return\\n    await interaction.response.defer(ephemeral=True, thinking=True)';s=s.replace(old,new);p.write_text(s, encoding='utf-8')\" && python bot.py"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
