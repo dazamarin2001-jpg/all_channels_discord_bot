@@ -9,6 +9,7 @@ A smart Python Discord bot that can build and organize a server, with:
 - Persistent warnings stored in SQLite
 - Private support tickets with buttons
 - User and server information commands
+- Rank sale logging to Google Sheets using a Discord form
 
 ## 1. Install Python
 
@@ -82,9 +83,59 @@ Run these commands as an administrator:
 - `/setup_tickets Tickets @Support`
 - `/ticketpanel`
 
+## Rank sale logging
+
+Use `/rank-sale` to open a small Discord form. The form asks for:
+
+- Seller Habbo Username
+- Buyer Habbo Username
+- Rank Sold
+- Amount Paid
+- Proof / Notes
+
+The bot saves each submission to Google Sheets and also posts a clean embed in the rank-sales log channel.
+
+### Google Sheet headers
+
+Create a sheet tab named `Rank Sales` and use these columns:
+
+```text
+Timestamp | Seller Discord | Seller ID | Seller Habbo | Buyer | Rank | Amount | Proof/Notes | Channel | Channel ID
+```
+
+### Railway variables needed
+
+Add these in Railway under your service **Variables** tab:
+
+```env
+DISCORD_TOKEN=your_discord_bot_token
+TEST_GUILD_ID=your_discord_server_id
+SPREADSHEET_ID=your_google_sheet_id
+GOOGLE_CREDENTIALS_JSON=your_full_google_service_account_json
+RANK_SALES_CHANNEL_ID=your_rank_sales_channel_id
+SALES_ROLE_ID=optional_role_id_allowed_to_use_rank_sale
+RANK_SALES_SHEET_NAME=Rank Sales
+TIMEZONE=America/Chicago
+```
+
+`SALES_ROLE_ID` is optional. If you leave it blank, anyone who can see the command can submit the form. Administrators can always use the command.
+
+Share the Google Sheet with the `client_email` from your Google service account JSON as **Editor**.
+
+## Railway deployment
+
+This repo includes `railway.toml`, so Railway starts the bot with:
+
+```bash
+python bot.py
+```
+
+Deploy from GitHub, add the Railway variables, then redeploy the service.
+
 ## Commands
 
 - `/ping`
+- `/rank-sale`
 - `/userinfo`
 - `/serverinfo`
 - `/clear`
@@ -101,7 +152,6 @@ Run these commands as an administrator:
 ## Security
 
 Never share your token or upload your `.env` file. If a token is exposed, reset it immediately in the Developer Portal.
-
 
 ## Smart server commands
 
@@ -144,7 +194,6 @@ AI_MODEL=gpt-4.1-mini
 Then restart the bot and use `/ask_organizer`.
 API use may incur charges on the OpenAI account associated with the key.
 
-
 ## Store / services layout
 
 Run `/build_server` and choose **Store / services server**.
@@ -152,7 +201,6 @@ Run `/build_server` and choose **Store / services server**.
 This creates an About Us section with locked member/vouch counters, an Information section with rules, announcements, updates, and restocks, plus Community, Support, and private Staff sections.
 
 Run `/update_stats` to refresh the counters.
-
 
 ## Complete combined layout
 
