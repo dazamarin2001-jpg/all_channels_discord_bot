@@ -1,4 +1,4 @@
 [deploy]
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
-startCommand = "python ./runtime_patch.py; python ./bot.py"
+startCommand = "python ./runtime_patch.py; python ./extra_knowledge_patch.py; python ./bot.py"
