@@ -1,12 +1,42 @@
+import asyncio
+import json
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import discord
+import gspread
 from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
+from google.oauth2.service_account import Credentials
 
 load_dotenv()
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 TEST_GUILD_ID = os.getenv("TEST_GUILD_ID")
+
+RANK_SALES_CHANNEL_ID = os.getenv("RANK_SALES_CHANNEL_ID") or os.getenv("LOG_CHANNEL_ID")
+SALES_ROLE_ID = os.getenv("SALES_ROLE_ID")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID") or os.getenv("GOOGLE_SHEET_ID")
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+RANK_SALES_SHEET_NAME = os.getenv("RANK_SALES_SHEET_NAME", "Rank Sales")
+TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")
+
+RANK_SALES_HEADERS = [
+    "Timestamp",
+    "Seller Discord",
+    "Seller ID",
+    "Seller Habbo",
+    "Buyer",
+    "Rank",
+    "Amount",
+    "Proof/Notes",
+    "Channel",
+    "Channel ID",
+]
+
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing in Railway Variables.")
@@ -140,6 +170,92 @@ STAFF_MARKERS = (
 )
 
 
+class RankSaleModal(discord.ui.Modal, title="Log Rank Sale"):
+    seller_habbo = discord.ui.TextInput(
+        label="Seller Habbo Username",
+        placeholder="Example: Dazamarin",
+        required=True,
+        max_length=80,
+    )
+    buyer = discord.ui.TextInput(
+        label="Buyer Habbo Username",
+        placeholder="Example: BuyerName",
+        required=True,
+        max_length=80,
+    )
+    rank = discord.ui.TextInput(
+        label="Rank Sold",
+        placeholder="Example: Trial iC, Senior Management, etc.",
+        required=True,
+        max_length=100,
+    )
+    amount = discord.ui.TextInput(
+        label="Amount Paid",
+        placeholder="Example: 50c, 100c, 1 GB",
+        required=True,
+        max_length=60,
+    )
+    proof = discord.ui.TextInput(
+        label="Proof / Notes",
+        placeholder="Paste proof link or add notes",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            seller_habbo = str(self.seller_habbo.value).strip()
+            buyer = str(self.buyer.value).strip()
+            rank = str(self.rank.value).strip()
+            amount = str(self.amount.value).strip()
+            proof = str(self.proof.value).strip() or "N/A"
+
+            timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
+            channel_name = getattr(interaction.channel, "name", "Unknown")
+
+            row = [
+                timestamp,
+                str(interaction.user),
+                str(interaction.user.id),
+                seller_habbo,
+                buyer,
+                rank,
+                amount,
+                proof,
+                channel_name,
+                str(interaction.channel_id),
+            ]
+
+            await asyncio.to_thread(append_rank_sale_to_sheet, row)
+
+            embed = discord.Embed(
+                title="Rank Sale Logged",
+                color=discord.Color.green(),
+                timestamp=datetime.now(ZoneInfo(TIMEZONE)),
+            )
+            embed.add_field(name="Discord Seller", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Seller Habbo", value=seller_habbo, inline=True)
+            embed.add_field(name="Buyer", value=buyer, inline=True)
+            embed.add_field(name="Rank Sold", value=rank, inline=True)
+            embed.add_field(name="Amount", value=amount, inline=True)
+            embed.add_field(name="Proof / Notes", value=proof, inline=False)
+
+            log_channel = await get_rank_sales_channel(interaction.guild)
+            if log_channel:
+                await log_channel.send(embed=embed)
+
+            await interaction.followup.send("Rank sale logged successfully.", ephemeral=True)
+        except Exception as exc:
+            print(f"Rank sale logging error: {type(exc).__name__}: {exc}")
+            await interaction.followup.send(
+                f"Could not log the rank sale: {type(exc).__name__}: {exc}",
+                ephemeral=True,
+            )
+
+
 def staff_roles(guild: discord.Guild) -> list[discord.Role]:
     return [role for role in guild.roles if role.name in STAFF_ROLE_NAMES]
 
@@ -199,6 +315,77 @@ def get_overwrites(guild: discord.Guild, category_name: str, channel_name: str, 
     return None
 
 
+def get_rank_sales_worksheet():
+    if not GOOGLE_CREDENTIALS_JSON:
+        raise RuntimeError("GOOGLE_CREDENTIALS_JSON is missing in Railway Variables.")
+    if not SPREADSHEET_ID:
+        raise RuntimeError("SPREADSHEET_ID is missing in Railway Variables.")
+
+    credentials_info = json.loads(GOOGLE_CREDENTIALS_JSON)
+    credentials = Credentials.from_service_account_info(credentials_info, scopes=GOOGLE_SCOPES)
+    sheets_client = gspread.authorize(credentials)
+    spreadsheet = sheets_client.open_by_key(SPREADSHEET_ID)
+
+    try:
+        worksheet = spreadsheet.worksheet(RANK_SALES_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        worksheet = spreadsheet.add_worksheet(title=RANK_SALES_SHEET_NAME, rows=1000, cols=len(RANK_SALES_HEADERS))
+        worksheet.append_row(RANK_SALES_HEADERS)
+
+    if not worksheet.row_values(1):
+        worksheet.append_row(RANK_SALES_HEADERS)
+
+    return worksheet
+
+
+def append_rank_sale_to_sheet(row: list[str]) -> None:
+    worksheet = get_rank_sales_worksheet()
+    worksheet.append_row(row, value_input_option="USER_ENTERED")
+
+
+async def get_rank_sales_channel(guild: discord.Guild | None):
+    if guild is None or not RANK_SALES_CHANNEL_ID:
+        return None
+
+    try:
+        channel_id = int(RANK_SALES_CHANNEL_ID)
+    except ValueError:
+        return None
+
+    channel = guild.get_channel(channel_id) or bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except discord.DiscordException:
+            return None
+
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel
+
+    return None
+
+
+async def member_can_log_sales(interaction: discord.Interaction) -> bool:
+    if not SALES_ROLE_ID:
+        return True
+    if interaction.guild is None:
+        return False
+
+    try:
+        sales_role_id = int(SALES_ROLE_ID)
+    except ValueError:
+        return False
+
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        member = await interaction.guild.fetch_member(interaction.user.id)
+
+    if member.guild_permissions.administrator:
+        return True
+
+    return any(role.id == sales_role_id for role in member.roles)
+
+
 async def update_stats(guild: discord.Guild) -> None:
     staff_ids = set()
     for role in staff_roles(guild):
@@ -246,6 +433,26 @@ async def on_ready() -> None:
 @bot.tree.command(description="Check whether the bot is responding.")
 async def ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(f"Pong! {round(bot.latency * 1000)} ms")
+
+
+@bot.tree.command(name="rank-sale", description="Open a form to log a rank sale into Google Sheets.")
+async def rank_sale(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        return
+
+    if not await member_can_log_sales(interaction):
+        await interaction.response.send_message("You do not have permission to log rank sales.", ephemeral=True)
+        return
+
+    if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
+        await interaction.response.send_message(
+            "Rank sales logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_modal(RankSaleModal())
 
 
 @bot.tree.command(description="Build channels and roles from a template.")
