@@ -3,18 +3,22 @@ from pathlib import Path
 p = Path("bot.py")
 s = p.read_text(encoding="utf-8")
 
-# Extra imports for AI mention replies and website reading.
-s = s.replace(
+
+def rep(old: str, new: str) -> None:
+    global s
+    if old in s:
+        s = s.replace(old, new)
+
+# Imports and environment for AI mention replies.
+rep(
     "import json\nimport os\nfrom datetime import datetime",
     "import json\nimport os\nimport re\nimport time\nimport urllib.request\nfrom datetime import datetime",
 )
-s = s.replace(
+rep(
     "from google.oauth2.service_account import Credentials\n",
     "from google.oauth2.service_account import Credentials\n\ntry:\n    from openai import OpenAI\nexcept Exception:\n    OpenAI = None\n",
 )
-
-# Environment variables.
-s = s.replace(
+rep(
     'TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")\n',
     'TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")\n'
     'OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")\n'
@@ -23,39 +27,47 @@ s = s.replace(
     'AI_WEBSITE_URLS = [url.strip() for url in AI_WEBSITE_URLS_RAW.split(",") if url.strip()]\n'
     'AI_SITE_CACHE_SECONDS = int(os.getenv("AI_SITE_CACHE_SECONDS", "600"))\n',
 )
-
-# Message content intent for mention replies.
-s = s.replace(
-    "intents.members = True\nbot = commands.Bot(command_prefix=\"!\", intents=intents)",
-    "intents.members = True\nintents.message_content = True\nbot = commands.Bot(command_prefix=\"!\", intents=intents)",
+rep(
+    'intents.members = True\nbot = commands.Bot(command_prefix="!", intents=intents)',
+    'intents.members = True\nintents.message_content = True\nbot = commands.Bot(command_prefix="!", intents=intents)',
 )
 
-# Rank Sales sheet layout improvements.
-s = s.replace(
+# Rank Sales sheet fixes.
+rep(
     'RANK_SALES_HEADERS = [\n    "Timestamp",\n    "Discord Seller",\n    "Seller Habbo",\n    "Buyer",\n    "Rank Sold",\n    "Amount",\n    "Proof / Notes",\n]',
     'RANK_SALES_HEADERS = [\n    "Discord Username",\n    "Habbo Username",\n    "Buyer",\n    "Rank Sold",\n    "Amount",\n    "Proof / Notes",\n    "Timestamp",\n]',
 )
-
-seller_block = '''    seller_habbo = discord.ui.TextInput(
+rep('''    seller_habbo = discord.ui.TextInput(
         label="Seller Habbo Username",
         placeholder="Example: Dazamarin",
         required=True,
         max_length=80,
     )
-'''
-s = s.replace(seller_block, "")
-s = s.replace(
-    "            seller_habbo = str(self.seller_habbo.value).strip()",
-    "            seller_habbo = interaction.user.display_name",
+''', '')
+rep('            seller_habbo = str(self.seller_habbo.value).strip()', '            seller_habbo = interaction.user.display_name')
+rep(
+    '''            row = [
+                timestamp,
+                str(interaction.user),
+                seller_habbo,
+                buyer,
+                rank,
+                amount,
+                proof,
+            ]''',
+    '''            row = [
+                str(interaction.user),
+                seller_habbo,
+                buyer,
+                rank,
+                amount,
+                proof,
+                timestamp,
+            ]''',
 )
-s = s.replace(
-    '            row = [\n                timestamp,\n                str(interaction.user),\n                seller_habbo,\n                buyer,\n                rank,\n                amount,\n                proof,\n            ]',
-    '            row = [\n                str(interaction.user),\n                seller_habbo,\n                buyer,\n                rank,\n                amount,\n                proof,\n                timestamp,\n            ]',
-)
-s = s.replace('embed.add_field(name="Discord Seller", value=interaction.user.mention, inline=True)', 'embed.add_field(name="Discord Username", value=interaction.user.mention, inline=True)')
-s = s.replace('embed.add_field(name="Seller Habbo", value=seller_habbo, inline=True)', 'embed.add_field(name="Habbo Username", value=seller_habbo, inline=True)')
-
-s = s.replace(
+rep('embed.add_field(name="Discord Seller", value=interaction.user.mention, inline=True)', 'embed.add_field(name="Discord Username", value=interaction.user.mention, inline=True)')
+rep('embed.add_field(name="Seller Habbo", value=seller_habbo, inline=True)', 'embed.add_field(name="Habbo Username", value=seller_habbo, inline=True)')
+rep(
     '''        if has_old_private_columns:
             cleaned.append([
                 padded[0],  # Timestamp
@@ -76,29 +88,19 @@ s = s.replace(
             else:
                 cleaned.append(padded[:len(RANK_SALES_HEADERS)])''',
 )
-
-s = s.replace('worksheet.format("G:G", {"wrapStrategy": "WRAP", "horizontalAlignment": "LEFT"})', 'worksheet.format("F:F", {"wrapStrategy": "WRAP", "horizontalAlignment": "LEFT"})')
-s = s.replace(
+rep('worksheet.format("G:G", {"wrapStrategy": "WRAP", "horizontalAlignment": "LEFT"})', 'worksheet.format("F:F", {"wrapStrategy": "WRAP", "horizontalAlignment": "LEFT"})')
+rep(
     '            worksheet.columns_auto_resize(0, 7)',
     '            worksheet.spreadsheet.batch_update({"requests":[{"updateDimensionProperties":{"range":{"sheetId":worksheet.id,"dimension":"COLUMNS","startIndex":i,"endIndex":i+1},"properties":{"pixelSize":w},"fields":"pixelSize"}} for i,w in enumerate([190,180,150,170,110,350,180])]})',
 )
-s = s.replace('                        "startIndex": 6,\n                        "endIndex": 7,', '                        "startIndex": 5,\n                        "endIndex": 6,')
-s = s.replace(
-    '    worksheet.append_row(row, value_input_option="USER_ENTERED")\n    apply_rank_sales_sheet_style(worksheet)',
-    '    worksheet.append_row(row, value_input_option="USER_ENTERED")',
-)
-
-# Allow only Chat Moderator to restyle the sheet.
-s = s.replace(
+rep('                        "startIndex": 6,\n                        "endIndex": 7,', '                        "startIndex": 5,\n                        "endIndex": 6,')
+rep('    worksheet.append_row(row, value_input_option="USER_ENTERED")\n    apply_rank_sales_sheet_style(worksheet)', '    worksheet.append_row(row, value_input_option="USER_ENTERED")')
+rep(
     '\n@bot.tree.command(name="setup-rank-sales-sheet", description="Clean and style the rank sales Google Sheet.")\n@app_commands.checks.has_permissions(administrator=True)\nasync def setup_rank_sales_sheet(interaction: discord.Interaction) -> None:\n    await interaction.response.defer(ephemeral=True, thinking=True)',
     '\n@bot.tree.command(name="setup-rank-sales-sheet", description="Clean and style the rank sales Google Sheet.")\nasync def setup_rank_sales_sheet(interaction: discord.Interaction) -> None:\n    if not any(getattr(r, "name", "") == "Chat Moderator" for r in getattr(interaction.user, "roles", [])):\n        await interaction.response.send_message("Only Chat Moderator can use this command.", ephemeral=True)\n        return\n    await interaction.response.defer(ephemeral=True, thinking=True)',
 )
-s = s.replace(
-    'Rank Sales sheet cleaned and styled. Columns are now: Timestamp, Discord Seller, Seller Habbo, Buyer, Rank Sold, Amount, Proof / Notes.',
-    'Rank Sales sheet cleaned and styled. Columns are now: Discord Username, Habbo Username, Buyer, Rank Sold, Amount, Proof / Notes, Timestamp.',
-)
+rep('Rank Sales sheet cleaned and styled. Columns are now: Timestamp, Discord Seller, Seller Habbo, Buyer, Rank Sold, Amount, Proof / Notes.', 'Rank Sales sheet cleaned and styled. Columns are now: Discord Username, Habbo Username, Buyer, Rank Sold, Amount, Proof / Notes, Timestamp.')
 
-# AI mention replies. Users can type: @BotName question
 ai_code = r'''
 
 AI_SITE_CACHE = {"expires": 0.0, "text": ""}
@@ -124,65 +126,38 @@ def fetch_one_website(url: str) -> str:
 
 
 def get_ai_website_context() -> str:
-    if not AI_WEBSITE_URLS:
-        return ""
-
-    now = time.time()
-    if AI_SITE_CACHE["text"] and AI_SITE_CACHE["expires"] > now:
-        return AI_SITE_CACHE["text"]
-
     parts = []
     for url in AI_WEBSITE_URLS[:5]:
         try:
-            parts.append(f"SOURCE: {url}\n{fetch_one_website(url)}")
-        except Exception as exc:
-            parts.append(f"SOURCE: {url}\nCould not read this page: {type(exc).__name__}")
-
+            parts.append(fetch_one_website(url))
+        except Exception:
+            pass
     parts.append("FSA known info: Pay timings are 1:00 AM, 4:00 AM, 7:00 AM, 1:00 PM, 4:00 PM, and 7:00 PM GMT.")
-    AI_SITE_CACHE["text"] = "\n\n---\n\n".join(parts)[:50000]
-    AI_SITE_CACHE["expires"] = now + AI_SITE_CACHE_SECONDS
-    return AI_SITE_CACHE["text"]
+    parts.append("FSA known info: The Foundation Team members are Eskimo, BeccaMneme, missbluegerlx2, and srafin.")
+    parts.append("FSA Events Team: The Events Team is responsible for entertainment in the Federal Habbo Agency. They plan and host games to keep the community active and engaged. The Events Team has two branches: Hosts and Planners. Hosts are responsible for hosting games in FSA; some games are hosted in base and others in external rooms related to FSA. Planners create ideas for activities and events such as celebratory events, competitions, and more. Planners may build event rooms if they choose, but it is not required. Events Leadership Team: Events Overseer is vacant, Events Director iC is vacant, Hosting Assistant 2iC is vacant, and Planning Assistant 2iC is vacant.")
+    return "\n\n---\n\n".join(parts)[:50000]
 
 
 def build_ai_answer(question: str, author_name: str, guild_name: str) -> str:
     q = question.casefold()
     if "pay" in q and any(word in q for word in ("time", "timing", "timings", "schedule", "when")):
         return "Pay timings are **1:00 AM, 4:00 AM, 7:00 AM, 1:00 PM, 4:00 PM, and 7:00 PM GMT**."
-
+    if "foundation" in q and any(word in q for word in ("team", "member", "members", "who", "list")):
+        return "The Foundation Team members are **Eskimo**, **BeccaMneme**, **missbluegerlx2**, and **srafin**."
+    if "events" in q and any(word in q for word in ("team", "branch", "branches", "host", "planner", "leadership", "overseer", "director", "assistant")):
+        return "The **Events Team** is responsible for entertainment in FSA. They plan and host games to keep the community active and engaged.\n\n**Branches:**\n• **Hosts** — host games in FSA. Some games are hosted in base, while others can be hosted in external FSA-related rooms.\n• **Planners** — create ideas for activities and events, including celebratory events, competitions, and more. They may build event rooms if they choose, but it is not required.\n\n**Events Leadership Team:**\n• Events Overseer — **VACANT**\n• Events Director iC — **VACANT**\n• Hosting Assistant 2iC — **VACANT**\n• Planning Assistant 2iC — **VACANT**"
     if AI_CLIENT is None:
         return "AI is not set up yet. Add OPENAI_API_KEY in Railway Variables, then redeploy me."
 
-    website_context = get_ai_website_context()
-    website_note = (
-        "Use the website context first when it answers the question, but never show the source URL, source name, citations, or any 'Source:' line in the final Discord reply. "
-        "If the website context does not answer it, answer as a normal helpful assistant."
-        if website_context else
-        "No website context is configured, so answer as a normal helpful assistant."
-    )
-
+    context = get_ai_website_context()
     instructions = (
         "You are MADBOT, a helpful Discord bot for a Habbo agency server. "
-        "Answer clearly and keep replies Discord-friendly. "
-        "For agency rules, ranks, procedures, and server info, prefer website context. "
-        "For general questions, answer normally. "
-        "Do not reveal secrets, tokens, private keys, or credentials. "
-        "Do not help with malware, credential theft, cheating tools, bypassing bans, or harmful exploitation. "
-        "Never include source links, source names, citations, or a 'Source:' line in your final answer. "
-        + website_note
+        "Use the FSA context first when it answers the question. "
+        "If the context does not answer it, answer normally. "
+        "Never include source links or a Source line. Keep answers clear and Discord-friendly."
     )
-
-    user_input = (
-        f"Discord server: {guild_name}\n"
-        f"Question from: {author_name}\n\n"
-        f"Website context:\n{website_context or 'None'}\n\n"
-        f"User question:\n{question}"
-    )
-
-    response = AI_CLIENT.responses.create(
-        model=AI_MODEL,
-        instructions=instructions,
-        input=user_input,
-    )
+    user_input = f"Discord server: {guild_name}\nQuestion from: {author_name}\n\nFSA context:\n{context or 'None'}\n\nUser question:\n{question}"
+    response = AI_CLIENT.responses.create(model=AI_MODEL, instructions=instructions, input=user_input)
     answer = getattr(response, "output_text", "") or "I could not generate an answer."
     return answer[:1900]
 
@@ -191,29 +166,20 @@ def build_ai_answer(question: str, author_name: str, guild_name: str) -> str:
 async def on_message(message: discord.Message) -> None:
     if message.author.bot:
         return
-
     if bot.user is None or bot.user not in message.mentions:
         await bot.process_commands(message)
         return
-
     question = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
     if not question:
-        await message.reply("Ask me a question after mentioning me. Example: `@MADBOT how do I log a rank sale?`", mention_author=False)
+        await message.reply("Ask me a question after mentioning me. Example: `@MADBOT who is in the Events Team?`", mention_author=False)
         return
-
     try:
         async with message.channel.typing():
-            answer = await asyncio.to_thread(
-                build_ai_answer,
-                question,
-                getattr(message.author, "display_name", str(message.author)),
-                message.guild.name if message.guild else "Direct Message",
-            )
+            answer = await asyncio.to_thread(build_ai_answer, question, getattr(message.author, "display_name", str(message.author)), message.guild.name if message.guild else "Direct Message")
         await message.reply(answer, mention_author=False)
     except Exception as exc:
         print(f"AI reply error: {type(exc).__name__}: {exc}")
         await message.reply(f"AI error: {type(exc).__name__}: {exc}", mention_author=False)
-
     await bot.process_commands(message)
 '''
 
