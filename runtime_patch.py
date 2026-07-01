@@ -12,7 +12,7 @@ def rep(old: str, new: str) -> None:
 # Imports and environment for AI mention replies.
 rep(
     "import json\nimport os\nfrom datetime import datetime",
-    "import json\nimport os\nimport re\nimport time\nimport urllib.request\nfrom datetime import datetime",
+    "import json\nimport os\nimport re\nimport time\nimport urllib.request\nfrom datetime import datetime, timedelta",
 )
 rep(
     "from google.oauth2.service_account import Credentials\n",
@@ -105,6 +105,7 @@ ai_code = r'''
 
 AI_SITE_CACHE = {"expires": 0.0, "text": ""}
 AI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY and OpenAI is not None else None
+PAY_HOURS_GMT = [1, 4, 7, 13, 16, 19]
 
 
 def clean_website_text(html: str) -> str:
@@ -138,10 +139,90 @@ def get_ai_website_context() -> str:
     return "\n\n---\n\n".join(parts)[:50000]
 
 
+def format_time(dt: datetime, label: str) -> str:
+    return dt.strftime("%-I:%M %p") + f" {label}"
+
+
+def format_duration(delta) -> str:
+    total_minutes = max(0, int(delta.total_seconds() // 60))
+    hours, minutes = divmod(total_minutes, 60)
+    if hours and minutes:
+        return f"{hours} hour{'s' if hours != 1 else ''} and {minutes} minute{'s' if minutes != 1 else ''}"
+    if hours:
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+
+def next_pay_from(now_utc: datetime) -> datetime:
+    today = now_utc.replace(minute=0, second=0, microsecond=0)
+    for hour in PAY_HOURS_GMT:
+        candidate = today.replace(hour=hour)
+        if candidate > now_utc:
+            return candidate
+    return (today + timedelta(days=1)).replace(hour=PAY_HOURS_GMT[0])
+
+
+def smart_pay_answer(question: str) -> str | None:
+    q = question.casefold()
+    if "pay" not in q:
+        return None
+
+    now_utc = datetime.now(ZoneInfo("UTC"))
+    next_pay = next_pay_from(now_utc)
+    eastern = next_pay.astimezone(ZoneInfo("America/New_York"))
+    central = next_pay.astimezone(ZoneInfo("America/Chicago"))
+    until = format_duration(next_pay - now_utc)
+
+    if any(word in q for word in ("next", "until", "how long", "when", "countdown")):
+        return (
+            f"Next pay is at **{format_time(next_pay, 'GMT')}** "
+            f"(**{format_time(eastern, 'Eastern')}** / **{format_time(central, 'Central')}**).\n"
+            f"That is in about **{until}**."
+        )
+
+    return (
+        "Pay is at **1:00 AM, 4:00 AM, 7:00 AM, 1:00 PM, 4:00 PM, and 7:00 PM GMT**.\n"
+        f"The next one is **{format_time(next_pay, 'GMT')}**, in about **{until}**."
+    )
+
+
+def smart_time_answer(question: str) -> str | None:
+    q = question.casefold()
+    match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*(est|edt|eastern|gmt|utc)\b", q)
+    if not match:
+        return None
+
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    period = match.group(3)
+    zone = match.group(4)
+    if period == "pm" and hour != 12:
+        hour += 12
+    if period == "am" and hour == 12:
+        hour = 0
+
+    source_zone = ZoneInfo("UTC") if zone in ("gmt", "utc") else ZoneInfo("America/New_York")
+    now = datetime.now(source_zone)
+    source_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    gmt = source_time.astimezone(ZoneInfo("UTC"))
+    eastern = source_time.astimezone(ZoneInfo("America/New_York"))
+
+    if zone in ("gmt", "utc"):
+        return f"**{format_time(source_time, 'GMT')}** is **{format_time(eastern, 'Eastern')}**."
+    return f"**{format_time(source_time, 'Eastern')}** is **{format_time(gmt, 'GMT')}**."
+
+
 def build_ai_answer(question: str, author_name: str, guild_name: str) -> str:
     q = question.casefold()
-    if "pay" in q and any(word in q for word in ("time", "timing", "timings", "schedule", "when")):
-        return "Pay timings are **1:00 AM, 4:00 AM, 7:00 AM, 1:00 PM, 4:00 PM, and 7:00 PM GMT**."
+
+    pay = smart_pay_answer(question)
+    if pay:
+        return pay
+
+    time_answer = smart_time_answer(question)
+    if time_answer:
+        return time_answer
+
     if "foundation" in q and any(word in q for word in ("team", "member", "members", "who", "list")):
         return "The Foundation Team members are **Eskimo**, **BeccaMneme**, **missbluegerlx2**, and **srafin**."
     if "events" in q and any(word in q for word in ("team", "branch", "branches", "host", "planner", "leadership", "overseer", "director", "assistant")):
@@ -152,8 +233,9 @@ def build_ai_answer(question: str, author_name: str, guild_name: str) -> str:
     context = get_ai_website_context()
     instructions = (
         "You are MADBOT, a helpful Discord bot for a Habbo agency server. "
-        "Use the FSA context first when it answers the question. "
-        "If the context does not answer it, answer normally. "
+        "Use the FSA context first when it answers the question, but answer naturally. "
+        "Do not dump full lists unless the user asks for a list. "
+        "If the user asks about timing, calculate the next/remaining time when possible. "
         "Never include source links or a Source line. Keep answers clear and Discord-friendly."
     )
     user_input = f"Discord server: {guild_name}\nQuestion from: {author_name}\n\nFSA context:\n{context or 'None'}\n\nUser question:\n{question}"
@@ -171,7 +253,7 @@ async def on_message(message: discord.Message) -> None:
         return
     question = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
     if not question:
-        await message.reply("Ask me a question after mentioning me. Example: `@MADBOT who is in the Events Team?`", mention_author=False)
+        await message.reply("Ask me a question after mentioning me. Example: `@MADBOT how long until next pay?`", mention_author=False)
         return
     try:
         async with message.channel.typing():
