@@ -1,0 +1,52 @@
+name: Rename Discord Commands
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  rename-commands:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Rename slash commands in bot.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('bot.py')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = {
+              'name="rank-sale"': 'name="sale"',
+              'name="rank-sales-summary"': 'name="sales-summary"',
+              'name="rank-sale-summary"': 'name="sales-summary"',
+          }
+
+          for old, new in replacements.items():
+              text = text.replace(old, new)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          rm -f sitecustomize.py
+
+      - name: Commit command rename
+        run: |
+          if git diff --quiet; then
+            echo "No command rename changes needed."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bot.py sitecustomize.py
+          git commit -m "Rename rank sale slash commands"
+          git push
