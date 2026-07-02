@@ -20,7 +20,6 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re
 
           path = Path("bot.py")
           text = path.read_text(encoding="utf-8")
@@ -35,6 +34,9 @@ jobs:
             await bot.tree.sync(guild=guild_object)
             print(f"Commands synced instantly to test server {TEST_GUILD_ID}.")'''
           text = text.replace(old_sync, new_sync)
+
+          start_marker = '@bot.tree.command(name="sale", description="Open a form to log a rank sale into Google Sheets.")'
+          end_marker = '@bot.tree.command(name="setup-rank-sales-sheet", description="Clean and style the rank sales Google Sheet.")'
 
           sale_group_code = '''sale_group = app_commands.Group(name="sale", description="Rank sale tools.")
 
@@ -104,18 +106,20 @@ async def sale_summary(interaction: discord.Interaction) -> None:
 
 
 bot.tree.add_command(sale_group)
+
+
 '''
 
           if 'sale_group = app_commands.Group(name="sale"' not in text:
-              pattern = re.compile(
-                  r'@bot\.tree\.command\(name="sale", description="Open a form to log a rank sale into Google Sheets\."\)\s*'
-                  r'async def rank_sale\(interaction: discord\.Interaction\) -> None:\s*'
-                  r'.*?await interaction\.response\.send_modal\(RankSaleModal\(\)\)\s*',
-                  re.DOTALL,
-              )
-              text, count = pattern.subn(sale_group_code + "\n", text, count=1)
-              if count != 1:
-                  raise SystemExit("Could not find the existing /sale command block to replace.")
+              start = text.find(start_marker)
+              end = text.find(end_marker)
+              if start == -1:
+                  raise SystemExit("Could not find /sale command start marker.")
+              if end == -1:
+                  raise SystemExit("Could not find setup-rank-sales-sheet end marker.")
+              if end <= start:
+                  raise SystemExit("Command markers are out of order.")
+              text = text[:start] + sale_group_code + text[end:]
 
           path.write_text(text, encoding="utf-8")
           PY
