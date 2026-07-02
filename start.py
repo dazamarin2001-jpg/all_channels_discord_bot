@@ -1,3 +1,4 @@
 import runtime_patch
 import pay_reminder_patch
+import rank_sales_totals_patch
 import bot
