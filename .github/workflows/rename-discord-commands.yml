@@ -99,6 +99,7 @@ async def sales_summary(interaction: discord.Interaction) -> None:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bot.py sitecustomize.py
+          git add bot.py
+          git add -u
           git commit -m "Add sales summary slash command"
           git push
