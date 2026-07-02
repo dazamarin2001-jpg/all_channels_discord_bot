@@ -9,7 +9,7 @@ def rep(old: str, new: str) -> None:
     if old in s:
         s = s.replace(old, new)
 
-# Exact Railway variable only. No channel-name fallback.
+# Exact Railway variable only. No channel-name fallback. Redeploy marker 2026-07-02.
 if "UPDATE_LOG_CHANNEL_ID" not in s:
     rep(
         'TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")\n',
