@@ -9,7 +9,7 @@ role_ping_code = r'''
 def can_use_role_ping(member) -> bool:
     if getattr(getattr(member, "guild_permissions", None), "administrator", False):
         return True
-    allowed = {"chat moderator", "administrator", "moderator", "founder", "foundation team", "foundation advisor", "leadership", "high rank"}
+    allowed = {"chat moderator", "administrator", "moderator", "founder", "foundation team", "foundation advisor", "leadership"}
     return any(str(getattr(role, "name", "")).casefold() in allowed for role in getattr(member, "roles", []))
 
 
@@ -52,6 +52,8 @@ if "ROLE_PING_BY_MESSAGE_ENABLED" not in s:
         "    if message.author.bot:\n        return\n    if await try_role_ping_message(message):\n        await bot.process_commands(message)\n        return\n",
         1,
     )
+else:
+    s = s.replace(', "high rank"', '')
 
 p.write_text(s, encoding="utf-8")
 print("Role ping patch applied.")
