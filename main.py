@@ -279,10 +279,47 @@ proof = clean_text(self.children[4].value) or "N/A"
 
     text = text.replace('rank_sales.batch_clear(["H:Z"])', 'rank_sales.batch_clear(["G:Z"])')
 
+    # Auto-delete human chatter in the rank sales log channel after 5 seconds.
+    auto_clean_event = '''@bot.event
+async def on_message(message: discord.Message) -> None:
+    if message.author.bot:
+        return
+    if message.guild is None:
+        return
+
+    cleanup_channel_id_raw = os.getenv("AUTO_CLEAN_CHANNEL_ID") or RANK_SALES_CHANNEL_ID
+    if not cleanup_channel_id_raw:
+        return
+
+    try:
+        cleanup_channel_id = int(cleanup_channel_id_raw)
+    except ValueError:
+        return
+
+    if message.channel.id != cleanup_channel_id:
+        return
+    if getattr(message, "pinned", False):
+        return
+
+    await asyncio.sleep(5)
+    try:
+        await message.delete()
+    except (discord.NotFound, discord.Forbidden):
+        pass
+    except discord.HTTPException as exc:
+        print(f"Auto cleanup failed: {type(exc).__name__}: {exc}")
+
+
+'''
+    if "AUTO_CLEAN_CHANNEL_ID" not in text and "async def on_message(message: discord.Message)" not in text:
+        marker = '@bot.tree.command(description="Check whether the bot is responding.")\n'
+        text = text.replace(marker, auto_clean_event + marker, 1)
+
     path.write_text(text)
     print("Sale log modal now uses server Discord username automatically.")
     print("Timestamps removed from Rank Sales and Rank Seller Totals.")
     print("Sale summary now falls back to Habbo Username when Discord Username is blank.")
     print("Similar seller names are merged before totals are built.")
+    print("Auto-clean enabled for non-log messages in the sales channel.")
 
 import bot
