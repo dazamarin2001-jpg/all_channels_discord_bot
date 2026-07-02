@@ -20,108 +20,32 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import base64
 
-          path = Path("bot.py")
-          text = path.read_text(encoding="utf-8")
+          path = Path('bot.py')
+          text = path.read_text(encoding='utf-8')
 
-          old_sync = '''            guild_object = discord.Object(id=int(TEST_GUILD_ID))
-            bot.tree.copy_global_to(guild=guild_object)
-            await bot.tree.sync(guild=guild_object)
-            print(f"Commands synced instantly to test server {TEST_GUILD_ID}.")'''
-          new_sync = '''            guild_object = discord.Object(id=int(TEST_GUILD_ID))
-            bot.tree.clear_commands(guild=guild_object)
-            bot.tree.copy_global_to(guild=guild_object)
-            await bot.tree.sync(guild=guild_object)
-            print(f"Commands synced instantly to test server {TEST_GUILD_ID}.")'''
-          text = text.replace(old_sync, new_sync)
+          sync_old = 'bot.tree.copy_global_to(guild=guild_object)\n            await bot.tree.sync(guild=guild_object)'
+          sync_new = 'bot.tree.clear_commands(guild=guild_object)\n            bot.tree.copy_global_to(guild=guild_object)\n            await bot.tree.sync(guild=guild_object)'
+          text = text.replace(sync_old, sync_new)
 
           start_marker = '@bot.tree.command(name="sale", description="Open a form to log a rank sale into Google Sheets.")'
           end_marker = '@bot.tree.command(name="setup-rank-sales-sheet", description="Clean and style the rank sales Google Sheet.")'
-
-          sale_group_code = '''sale_group = app_commands.Group(name="sale", description="Rank sale tools.")
-
-
-@sale_group.command(name="log", description="Open a form to log a rank sale into Google Sheets.")
-async def sale_log(interaction: discord.Interaction) -> None:
-    if interaction.guild is None:
-        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
-        return
-
-    if not await member_can_log_sales(interaction):
-        await interaction.response.send_message("You do not have permission to log rank sales.", ephemeral=True)
-        return
-
-    if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
-        await interaction.response.send_message(
-            "Rank sales logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.",
-            ephemeral=True,
-        )
-        return
-
-    await interaction.response.send_modal(RankSaleModal())
-
-
-@sale_group.command(name="summary", description="Show the top rank sellers based on logged sales.")
-async def sale_summary(interaction: discord.Interaction) -> None:
-    await interaction.response.defer(ephemeral=True, thinking=True)
-
-    if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
-        await interaction.followup.send(
-            "Rank sales logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.",
-            ephemeral=True,
-        )
-        return
-
-    try:
-        worksheet = await asyncio.to_thread(get_rank_sales_worksheet)
-        values = await asyncio.to_thread(worksheet.get_all_values)
-        rows = values[1:] if len(values) > 1 else []
-
-        if not rows:
-            await interaction.followup.send("No rank sales have been logged yet.", ephemeral=True)
-            return
-
-        seller_totals = {}
-        for row in rows:
-            seller = row[2].strip() if len(row) > 2 and row[2].strip() else "Unknown"
-            seller_totals[seller] = seller_totals.get(seller, 0) + 1
-
-        top_sellers = sorted(seller_totals.items(), key=lambda item: item[1], reverse=True)[:10]
-        leaderboard = "\\n".join(
-            f"{index}. {seller}: {count} sale{'s' if count != 1 else ''}"
-            for index, (seller, count) in enumerate(top_sellers, start=1)
-        )
-
-        embed = discord.Embed(
-            title="Rank Seller Totals",
-            description=leaderboard,
-            color=discord.Color.green(),
-            timestamp=datetime.now(ZoneInfo(TIMEZONE)),
-        )
-        embed.add_field(name="Total Sales Logged", value=str(len(rows)), inline=False)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except Exception as exc:
-        print(f"Rank sales summary error: {type(exc).__name__}: {exc}")
-        await interaction.followup.send(f"Could not load sales summary: {type(exc).__name__}: {exc}", ephemeral=True)
-
-
-bot.tree.add_command(sale_group)
-
-
-'''
+          encoded = 'c2FsZV9ncm91cCA9IGFwcF9jb21tYW5kcy5Hcm91cChuYW1lPSJzYWxlIiwgZGVzY3JpcHRpb249IlJhbmsgc2FsZSB0b29scy4iKQoKCkBzYWxlX2dyb3VwLmNvbW1hbmQobmFtZT0ibG9nIiwgZGVzY3JpcHRpb249Ik9wZW4gYSBmb3JtIHRvIGxvZyBhIHJhbmsgc2FsZSBpbnRvIEdvb2dsZSBTaGVldHMuIikKYXN5bmMgZGVmIHNhbGVfbG9nKGludGVyYWN0aW9uOiBkaXNjb3JkLkludGVyYWN0aW9uKSAtPiBOb25lOgogICAgaWYgaW50ZXJhY3Rpb24uZ3VpbGQgaXMgTm9uZToKICAgICAgICBhd2FpdCBpbnRlcmFjdGlvbi5yZXNwb25zZS5zZW5kX21lc3NhZ2UoIlVzZSB0aGlzIGNvbW1hbmQgaW4gYSBzZXJ2ZXIuIiwgZXBoZW1lcmFsPVRydWUpCiAgICAgICAgcmV0dXJuCgogICAgaWYgbm90IGF3YWl0IG1lbWJlcl9jYW5fbG9nX3NhbGVzKGludGVyYWN0aW9uKToKICAgICAgICBhd2FpdCBpbnRlcmFjdGlvbi5yZXNwb25zZS5zZW5kX21lc3NhZ2UoIllvdSBkbyBub3QgaGF2ZSBwZXJtaXNzaW9uIHRvIGxvZyByYW5rIHNhbGVzLiIsIGVwaGVtZXJhbD1UcnVlKQogICAgICAgIHJldHVybgoKICAgIGlmIG5vdCBTUFJFQURTSEVFVF9JRCBvciBub3QgR09PR0xFX0NSRURFTlRJQUxTX0pTT046CiAgICAgICAgYXdhaXQgaW50ZXJhY3Rpb24ucmVzcG9uc2Uuc2VuZF9tZXNzYWdlKAogICAgICAgICAgICAiUmFuayBzYWxlcyBsb2dnaW5nIGlzIG5vdCBjb25maWd1cmVkIHlldC4gQWRkIFNQUkVBRFNIRUVUX0lEIGFuZCBHT09HTEVfQ1JFREVOVElBTFNfSlNPTiBpbiBSYWlsd2F5IFZhcmlhYmxlcy4iLAogICAgICAgICAgICBlcGhlbWVyYWw9VHJ1ZSwKICAgICAgICApCiAgICAgICAgcmV0dXJuCgogICAgYXdhaXQgaW50ZXJhY3Rpb24ucmVzcG9uc2Uuc2VuZF9tb2RhbChSYW5rU2FsZU1vZGFsKCkpCgoKQHNhbGVfZ3JvdXAuY29tbWFuZChuYW1lPSJzdW1tYXJ5IiwgZGVzY3JpcHRpb249IlNob3cgdGhlIHRvcCByYW5rIHNlbGxlcnMgYmFzZWQgb24gbG9nZ2VkIHNhbGVzLiIpCmFzeW5jIGRlZiBzYWxlX3N1bW1hcnkoaW50ZXJhY3Rpb246IGRpc2NvcmQuSW50ZXJhY3Rpb24pIC0+IE5vbmU6CiAgICBhd2FpdCBpbnRlcmFjdGlvbi5yZXNwb25zZS5kZWZlcihlcGhlbWVyYWw9VHJ1ZSwgdGhpbmtpbmc9VHJ1ZSkKCiAgICBpZiBub3QgU1BSRUFEU0hFRVRfSUQgb3Igbm90IEdPT0dMRV9DUkVERU5USUFMU19KU09OOgogICAgICAgIGF3YWl0IGludGVyYWN0aW9uLmZvbGxvd3VwLnNlbmQoCiAgICAgICAgICAgICJSYW5rIHNhbGVzIGxvZ2dpbmcgaXMgbm90IGNvbmZpZ3VyZWQgeWV0LiBBZGQgU1BSRUFEU0hFRVRfSUQgYW5kIEdPT0dMRV9DUkVERU5USUFMU19KU09OIGluIFJhaWx3YXkgVmFyaWFibGVzLiIsCiAgICAgICAgICAgIGVwaGVtZXJhbD1UcnVlLAogICAgICAgICkKICAgICAgICByZXR1cm4KCiAgICB0cnk6CiAgICAgICAgd29ya3NoZWV0ID0gYXdhaXQgYXN5bmNpby50b190aHJlYWQoZ2V0X3Jhbmtfc2FsZXNfd29ya3NoZWV0KQogICAgICAgIHZhbHVlcyA9IGF3YWl0IGFzeW5jaW8udG9fdGhyZWFkKHdvcmtzaGVldC5nZXRfYWxsX3ZhbHVlcykKICAgICAgICByb3dzID0gdmFsdWVzWzE6XSBpZiBsZW4odmFsdWVzKSA+IDEgZWxzZSBbXQoKICAgICAgICBpZiBub3Qgcm93czoKICAgICAgICAgICAgYXdhaXQgaW50ZXJhY3Rpb24uZm9sbG93dXAuc2VuZCgiTm8gcmFuayBzYWxlcyBoYXZlIGJlZW4gbG9nZ2VkIHlldC4iLCBlcGhlbWVyYWw9VHJ1ZSkKICAgICAgICAgICAgcmV0dXJuCgogICAgICAgIHNlbGxlcl90b3RhbHMgPSB7fQogICAgICAgIGZvciByb3cgaW4gcm93czoKICAgICAgICAgICAgc2VsbGVyID0gcm93WzJdLnN0cmlwKCkgaWYgbGVuKHJvdykgPiAyIGFuZCByb3dbMl0uc3RyaXAoKSBlbHNlICJVbmtub3duIgogICAgICAgICAgICBzZWxsZXJfdG90YWxzW3NlbGxlcl0gPSBzZWxsZXJfdG90YWxzLmdldChzZWxsZXIsIDApICsgMQoKICAgICAgICB0b3Bfc2VsbGVycyA9IHNvcnRlZChzZWxsZXJfdG90YWxzLml0ZW1zKCksIGtleT1sYW1iZGEgaXRlbTogaXRlbVsxXSwgcmV2ZXJzZT1UcnVlKVs6MTBdCiAgICAgICAgbGVhZGVyYm9hcmQgPSAiXG4iLmpvaW4oCiAgICAgICAgICAgIGYie2luZGV4fS4ge3NlbGxlcn06IHtjb3VudH0gc2FsZXsncycgaWYgY291bnQgIT0gMSBlbHNlICcnfSIKICAgICAgICAgICAgZm9yIGluZGV4LCAoc2VsbGVyLCBjb3VudCkgaW4gZW51bWVyYXRlKHRvcF9zZWxsZXJzLCBzdGFydD0xKQogICAgICAgICkKCiAgICAgICAgZW1iZWQgPSBkaXNjb3JkLkVtYmVkKAogICAgICAgICAgICB0aXRsZT0iUmFuayBTZWxsZXIgVG90YWxzIiwKICAgICAgICAgICAgZGVzY3JpcHRpb249bGVhZGVyYm9hcmQsCiAgICAgICAgICAgIGNvbG9yPWRpc2NvcmQuQ29sb3IuZ3JlZW4oKSwKICAgICAgICAgICAgdGltZXN0YW1wPWRhdGV0aW1lLm5vdyhab25lSW5mbyhUSU1FWk9ORSkpLAogICAgICAgICkKICAgICAgICBlbWJlZC5hZGRfZmllbGQobmFtZT0iVG90YWwgU2FsZXMgTG9nZ2VkIiwgdmFsdWU9c3RyKGxlbihyb3dzKSksIGlubGluZT1GYWxzZSkKICAgICAgICBhd2FpdCBpbnRlcmFjdGlvbi5mb2xsb3d1cC5zZW5kKGVtYmVkPWVtYmVkLCBlcGhlbWVyYWw9VHJ1ZSkKICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZXhjOgogICAgICAgIHByaW50KGYiUmFuayBzYWxlcyBzdW1tYXJ5IGVycm9yOiB7dHlwZShleGMpLl9fbmFtZV9ffToge2V4Y30iKQogICAgICAgIGF3YWl0IGludGVyYWN0aW9uLmZvbGxvd3VwLnNlbmQoZiJDb3VsZCBub3QgbG9hZCBzYWxlcyBzdW1tYXJ5OiB7dHlwZShleGMpLl9fbmFtZV9ffToge2V4Y30iLCBlcGhlbWVyYWw9VHJ1ZSkKCgpib3QudHJlZS5hZGRfY29tbWFuZChzYWxlX2dyb3VwKQoKCg=='
+          sale_group_code = base64.b64decode(encoded).decode('utf-8')
 
           if 'sale_group = app_commands.Group(name="sale"' not in text:
               start = text.find(start_marker)
               end = text.find(end_marker)
               if start == -1:
-                  raise SystemExit("Could not find /sale command start marker.")
+                  raise SystemExit('Could not find /sale command start marker.')
               if end == -1:
-                  raise SystemExit("Could not find setup-rank-sales-sheet end marker.")
+                  raise SystemExit('Could not find setup-rank-sales-sheet marker.')
               if end <= start:
-                  raise SystemExit("Command markers are out of order.")
+                  raise SystemExit('Command markers are out of order.')
               text = text[:start] + sale_group_code + text[end:]
 
-          path.write_text(text, encoding="utf-8")
+          path.write_text(text, encoding='utf-8')
           PY
 
       - name: Commit sale group patch
@@ -130,7 +54,6 @@ bot.tree.add_command(sale_group)
             echo "No sale command group changes needed."
             exit 0
           fi
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add bot.py
