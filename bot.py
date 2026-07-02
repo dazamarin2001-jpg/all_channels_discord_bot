@@ -206,7 +206,7 @@ class RankSaleModal(discord.ui.Modal, title="Log Rank Sale"):
 
             row = [
                 timestamp,
-                str(interaction.user),
+                getattr(interaction.user, "display_name", interaction.user.name),
                 seller_habbo,
                 buyer,
                 rank,
@@ -571,31 +571,46 @@ async def sale_log(interaction: discord.Interaction) -> None:
 async def sale_summary(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        credentials_info = json.loads(GOOGLE_CREDENTIALS_JSON)
-        credentials = Credentials.from_service_account_info(credentials_info, scopes=GOOGLE_SCOPES)
-        sheets_client = gspread.authorize(credentials)
-        spreadsheet = sheets_client.open_by_key(SPREADSHEET_ID)
-        worksheet = spreadsheet.worksheet("Rank Seller Totals")
+        worksheet = await asyncio.to_thread(get_rank_sales_worksheet)
         values = await asyncio.to_thread(worksheet.get_all_values)
         rows = values[1:] if len(values) > 1 else []
 
         if not rows:
-            await interaction.followup.send("No rank seller totals have been synced yet.", ephemeral=True)
+            await interaction.followup.send("No rank sales have been logged yet.", ephemeral=True)
             return
 
+        seller_totals = {}
+        seller_amounts = {}
+
+        for row in rows:
+            padded = list(row) + [""] * 7
+            seller = padded[1].strip() or "Unknown"
+            amount_text = padded[5].strip().lower().replace(",", "")
+
+            amount_digits = ""
+            for char in amount_text:
+                if char.isdigit():
+                    amount_digits += char
+                elif amount_digits:
+                    break
+            amount = int(amount_digits) if amount_digits else 0
+
+            seller_totals[seller] = seller_totals.get(seller, 0) + 1
+            seller_amounts[seller] = seller_amounts.get(seller, 0) + amount
+
+        sorted_sellers = sorted(
+            seller_totals.keys(),
+            key=lambda seller: (seller_amounts.get(seller, 0), seller_totals.get(seller, 0)),
+            reverse=True,
+        )[:10]
+
         lines = []
-        for index, row in enumerate(rows[:10], start=1):
-            padded = list(row) + ["", "", ""]
-            seller = padded[0].strip()
-            sales = padded[1].strip() or "0"
-            total = padded[2].strip() or "0"
-            if not seller:
-                continue
-            if "sale" not in sales.casefold():
-                sales = f"{sales} sales"
-            if total and total[-1].isdigit():
-                total = f"{total}c"
-            lines.append(f"{index}.  **{seller}**\n— {sales} — {total} total")
+        for index, seller in enumerate(sorted_sellers, start=1):
+            sales_count = seller_totals[seller]
+            amount_total = seller_amounts[seller]
+            lines.append(
+                f"{index}.  **{seller}**\n— {sales_count} sale{'s' if sales_count != 1 else ''} — {amount_total}c total"
+            )
 
         embed = discord.Embed(
             title="Rank Seller Totals",
@@ -603,7 +618,7 @@ async def sale_summary(interaction: discord.Interaction) -> None:
             color=discord.Color.purple(),
             timestamp=datetime.now(ZoneInfo(TIMEZONE)),
         )
-        embed.set_footer(text="Synced from the Rank Seller Totals sheet")
+        embed.set_footer(text="Synced from the Rank Sales sheet")
         await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as exc:
         print(f"Rank sales summary error: {type(exc).__name__}: {exc}")
