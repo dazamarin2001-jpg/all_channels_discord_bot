@@ -543,7 +543,7 @@ async def ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(f"Pong! {round(bot.latency * 1000)} ms")
 
 
-@bot.tree.command(name="rank-sale", description="Open a form to log a rank sale into Google Sheets.")
+@bot.tree.command(name="sale", description="Open a form to log a rank sale into Google Sheets.")
 async def rank_sale(interaction: discord.Interaction) -> None:
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
