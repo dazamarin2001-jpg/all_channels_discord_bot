@@ -22,40 +22,43 @@ jobs:
           from pathlib import Path
 
           path = Path('bot.py')
-          text = path.read_text(encoding='utf-8')
+          lines = path.read_text(encoding='utf-8').splitlines()
 
-          old = '''                      amount_text = padded[5].strip().lower().replace(",", "")
+          target = [
+              '            amount_digits = ""',
+              '            for char in amount_text:',
+              '                if char.isdigit():',
+              '                    amount_digits += char',
+              '                elif amount_digits:',
+              '                    break',
+              '            amount = int(amount_digits) if amount_digits else 0',
+          ]
 
-                      amount_digits = ""
-                      for char in amount_text:
-                          if char.isdigit():
-                              amount_digits += char
-                          elif amount_digits:
-                              break
-                      amount = int(amount_digits) if amount_digits else 0
-'''
-          new = '''                      amount_text = padded[5].strip().lower().replace(",", "")
+          replacement = [
+              '            amount = 0',
+              '            number = ""',
+              '            for char in amount_text + " ":',
+              '                if char.isdigit():',
+              '                    number += char',
+              '                    continue',
+              '                if number:',
+              '                    value = int(number)',
+              '                    idx = amount_text.find(number)',
+              '                    nearby = amount_text[max(0, idx - 2):idx + len(number) + 4]',
+              '                    if "gb" in nearby or "gold" in nearby:',
+              '                        amount += value * 50',
+              '                    else:',
+              '                        amount += value',
+              '                    number = ""',
+          ]
 
-                      amount = 0
-                      number = ""
-                      for char in amount_text + " ":
-                          if char.isdigit():
-                              number += char
-                              continue
-                          if number:
-                              value = int(number)
-                              nearby = amount_text[max(0, amount_text.find(number) - 2):amount_text.find(number) + len(number) + 4]
-                              if "gb" in nearby or "gold" in nearby:
-                                  amount += value * 50
-                              else:
-                                  amount += value
-                              number = ""
-'''
-
-          if old not in text:
+          for index in range(len(lines) - len(target) + 1):
+              if lines[index:index + len(target)] == target:
+                  lines[index:index + len(target)] = replacement
+                  path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+                  break
+          else:
               raise SystemExit('Could not find old amount parser block.')
-          text = text.replace(old, new, 1)
-          path.write_text(text, encoding='utf-8')
           PY
 
       - name: Commit credit parser patch
