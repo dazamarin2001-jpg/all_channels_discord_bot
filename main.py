@@ -47,6 +47,26 @@ GOOGLE_SCOPES''',
         count=1,
     )
 
+    # Add helpers to merge similar seller names like "Missbluegerlx2 | Eshly" and "Missbluegerlx2".
+    seller_identity_helpers = '''def seller_identity_display(value: object) -> str:
+    text = clean_text(value)
+    if not text or text.casefold() == "n/a":
+        return ""
+    for separator in ("|", " - ", " — ", " – "):
+        if separator in text:
+            text = text.split(separator, 1)[0].strip()
+            break
+    text = re.sub(r"\\s+", " ", text)
+    return text.strip(" .,-_")
+
+
+def seller_identity_key(value: object) -> str:
+    display = seller_identity_display(value).casefold()
+    return re.sub(r"[^a-z0-9]+", "", display)
+'''
+    if "def seller_identity_display(" not in text:
+        text = text.replace("\n\ndef amount_to_credits", "\n\n" + seller_identity_helpers + "\ndef amount_to_credits", 1)
+
     # Fix the bad indentation from the previous modal edit if it exists.
     broken = '''            seller_habbo = clean_text(self.children[0].value)
 buyer = clean_text(self.children[1].value)
@@ -155,16 +175,18 @@ proof = clean_text(self.children[4].value) or "N/A"
         discord_seller, seller_habbo, _buyer, rank_sold, amount, _proof = padded[:6]
         seller_habbo = clean_text(seller_habbo)
         discord_seller = clean_text(discord_seller)
-        key = norm(seller_habbo) or norm(discord_seller)
+        seller_display = seller_identity_display(seller_habbo) or seller_identity_display(discord_seller)
+        key = seller_identity_key(seller_habbo) or seller_identity_key(discord_seller)
         if not key:
             continue
 
         amount_value = amount_to_credits(amount)
         if key not in totals:
-            totals[key] = [discord_seller or seller_habbo or "N/A", seller_habbo or discord_seller or "N/A", 0, 0.0, rank_sold or "N/A", False]
+            totals[key] = [seller_display or "N/A", seller_display or "N/A", 0, 0.0, rank_sold or "N/A", False]
         record = totals[key]
-        record[0] = discord_seller or seller_habbo or record[0]
-        record[1] = seller_habbo or discord_seller or record[1]
+        if seller_display:
+            record[0] = seller_display
+            record[1] = seller_display
         record[2] = int(record[2]) + 1
         if amount_value is not None:
             record[3] = float(record[3]) + amount_value
@@ -198,14 +220,15 @@ proof = clean_text(self.children[4].value) or "N/A"
     rows = values[1:] if len(values) > 1 else []
 
     discord_seller, seller_habbo, _buyer, rank_sold, amount, _proof = (sale_row + [""] * 6)[:6]
-    target_habbo = norm(seller_habbo)
-    target_discord = norm(discord_seller)
+    seller_display = seller_identity_display(seller_habbo) or seller_identity_display(discord_seller)
+    target_habbo = seller_identity_key(seller_habbo)
+    target_discord = seller_identity_key(discord_seller)
     new_amount = amount_to_credits(amount)
 
     for index, row in enumerate(rows, start=2):
         padded = list(row) + [""] * len(RANK_SELLER_TOTALS_HEADERS)
-        same_habbo = target_habbo and norm(padded[1]) == target_habbo
-        same_discord = target_discord and norm(padded[0]) == target_discord
+        same_habbo = target_habbo and seller_identity_key(padded[1]) == target_habbo
+        same_discord = target_discord and seller_identity_key(padded[0]) == target_discord
         if not same_habbo and not same_discord:
             continue
 
@@ -220,8 +243,8 @@ proof = clean_text(self.children[4].value) or "N/A"
             total_amount = (previous_amount or 0) + (new_amount or 0)
 
         updated = [
-            clean_text(discord_seller) or clean_text(seller_habbo) or padded[0] or "N/A",
-            clean_text(seller_habbo) or clean_text(discord_seller) or padded[1] or "N/A",
+            seller_display or padded[0] or padded[1] or "N/A",
+            seller_display or padded[1] or padded[0] or "N/A",
             total_sales,
             format_credits(total_amount),
             clean_text(rank_sold) or padded[4] or "N/A",
@@ -231,8 +254,8 @@ proof = clean_text(self.children[4].value) or "N/A"
         return
 
     new_row = [
-        clean_text(discord_seller) or clean_text(seller_habbo) or "N/A",
-        clean_text(seller_habbo) or clean_text(discord_seller) or "N/A",
+        seller_display or "N/A",
+        seller_display or "N/A",
         1,
         format_credits(new_amount),
         clean_text(rank_sold) or "N/A",
@@ -260,5 +283,6 @@ proof = clean_text(self.children[4].value) or "N/A"
     print("Sale log modal now uses server Discord username automatically.")
     print("Timestamps removed from Rank Sales and Rank Seller Totals.")
     print("Sale summary now falls back to Habbo Username when Discord Username is blank.")
+    print("Similar seller names are merged before totals are built.")
 
 import bot
