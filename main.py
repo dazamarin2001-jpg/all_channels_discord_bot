@@ -34,7 +34,6 @@ def upsert_startup_cleanup_listener(text: str, replacement: str) -> str:
         candidates = [pos for pos in (next_command, next_event, next_listener) if pos != -1]
         end = min(candidates) if candidates else len(text)
         return text[:start] + replacement.rstrip() + text[end:]
-
     marker = '@bot.tree.command(description="Check whether the bot is responding.")\n'
     return text.replace(marker, replacement.rstrip() + "\n\n" + marker, 1)
 
@@ -43,6 +42,7 @@ path = Path("bot.py")
 if path.exists():
     text = path.read_text()
 
+    # Rank sales header cleanup: no timestamp columns.
     text = re.sub(
         r'RANK_SALES_HEADERS = \[[\s\S]*?\]\n\nRANK_SELLER_TOTALS_HEADERS',
         '''RANK_SALES_HEADERS = [
@@ -73,6 +73,7 @@ GOOGLE_SCOPES''',
         count=1,
     )
 
+    # Helpers for merging similar names like "Missbluegerlx2 | Eshly" with "Missbluegerlx2".
     helpers = '''def seller_identity_display(value: object) -> str:
     text = clean_text(value)
     if not text or text.casefold() == "n/a":
@@ -92,6 +93,7 @@ def seller_identity_key(value: object) -> str:
     if "def seller_identity_display(" not in text:
         text = text.replace("\n\ndef amount_to_credits", "\n\n" + helpers + "\ndef amount_to_credits", 1)
 
+    # Remove Seller Habbo field from the sale modal and use server username automatically.
     seller_field = '''    seller_habbo = discord.ui.TextInput(
         label="Seller Habbo Username",
         placeholder="Example: Dazamarin",
@@ -256,19 +258,240 @@ proof = clean_text(self.children[4].value) or "N/A"
     )
     text = text.replace('rank_sales.batch_clear(["H:Z"])', 'rank_sales.batch_clear(["G:Z"])')
 
+    # Donation logging setup: /donate with separate channel and Donations sheet tab.
+    donation_block = '''DONATIONS_SHEET_NAME = os.getenv("DONATIONS_SHEET_NAME", "Donations")
+DONATION_CHANNEL_ID = os.getenv("DONATION_CHANNEL_ID") or os.getenv("DONATIONS_CHANNEL_ID")
+DONATIONS_HEADERS = ["Logged By", "Donor Habbo", "Amount", "Proof / Notes"]
+
+
+def get_donations_worksheet(spreadsheet=None):
+    spreadsheet = spreadsheet or get_spreadsheet()
+    return get_or_create_worksheet(spreadsheet, DONATIONS_SHEET_NAME, DONATIONS_HEADERS)
+
+
+def clean_donation_rows(values: list[list[str]]) -> list[list[str]]:
+    cleaned = [DONATIONS_HEADERS]
+    if not values:
+        return cleaned
+    for row in values[1:]:
+        if not any(str(cell).strip() for cell in row):
+            continue
+        padded = list(row) + [""] * len(DONATIONS_HEADERS)
+        cleaned.append(padded[:len(DONATIONS_HEADERS)])
+    return cleaned
+
+
+def setup_donations_sheet_layout() -> None:
+    spreadsheet = get_spreadsheet()
+    sheet = get_donations_worksheet(spreadsheet)
+    values = sheet.get_all_values()
+    cleaned = clean_donation_rows(values)
+    sheet.clear()
+    sheet.update(range_name="A1", values=cleaned, value_input_option="USER_ENTERED")
+    try:
+        sheet.batch_clear(["E:Z"])
+    except Exception:
+        pass
+    apply_sales_sheet_style(sheet, len(DONATIONS_HEADERS))
+
+
+def append_donation_to_sheet(row: list[str]) -> None:
+    spreadsheet = get_spreadsheet()
+    sheet = get_donations_worksheet(spreadsheet)
+    values = sheet.get_all_values()
+    current_header = values[0][:len(DONATIONS_HEADERS)] if values else []
+    if current_header != DONATIONS_HEADERS:
+        setup_donations_sheet_layout()
+        spreadsheet = get_spreadsheet()
+        sheet = get_donations_worksheet(spreadsheet)
+    sheet.append_row(row, value_input_option="USER_ENTERED")
+    apply_sales_sheet_style(sheet, len(DONATIONS_HEADERS))
+
+
+async def get_donation_channel(guild: discord.Guild | None):
+    if guild is None or not DONATION_CHANNEL_ID:
+        return None
+    try:
+        channel_id = int(DONATION_CHANNEL_ID)
+    except ValueError:
+        return None
+    channel = guild.get_channel(channel_id) or bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except discord.DiscordException:
+            return None
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel
+    return None
+
+
+class DonationModal(discord.ui.Modal, title="Log Donation"):
+    donor = discord.ui.TextInput(
+        label="Donor Habbo Username",
+        placeholder="Example: DonorName",
+        required=True,
+        max_length=80,
+    )
+    amount = discord.ui.TextInput(
+        label="Donation Amount",
+        placeholder="Example: 50c, 1 GB, HC, furni",
+        required=True,
+        max_length=80,
+    )
+    proof = discord.ui.TextInput(
+        label="Proof / Notes",
+        placeholder="Paste proof link or add notes",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            donor = clean_text(self.donor.value)
+            amount = clean_text(self.amount.value)
+            proof = clean_text(self.proof.value) or "N/A"
+            logged_by = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
+
+            row = [logged_by, donor, amount, proof]
+            await asyncio.to_thread(append_donation_to_sheet, row)
+
+            embed = discord.Embed(
+                title="Donation Logged",
+                color=discord.Color.gold(),
+                timestamp=datetime.now(ZoneInfo(TIMEZONE)),
+            )
+            embed.add_field(name="Logged By", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Donor", value=donor, inline=True)
+            embed.add_field(name="Amount", value=amount, inline=True)
+            embed.add_field(name="Proof / Notes", value=proof, inline=False)
+
+            log_channel = await get_donation_channel(interaction.guild)
+            if log_channel is None:
+                raise RuntimeError("DONATION_CHANNEL_ID is missing, wrong, or the bot cannot see that channel.")
+            await log_channel.send(embed=embed)
+            await interaction.followup.send("Donation logged and sent to the donation channel.", ephemeral=True)
+        except Exception as exc:
+            print(f"Donation logging error: {type(exc).__name__}: {exc}")
+            await interaction.followup.send(f"Could not log donation: {type(exc).__name__}: {exc}", ephemeral=True)
+
+
+@bot.tree.command(name="donate", description="Open a form to log a donation into Google Sheets.")
+async def donate(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        return
+    if not await member_can_log_sales(interaction):
+        await interaction.response.send_message("You do not have permission to log donations.", ephemeral=True)
+        return
+    if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
+        await interaction.response.send_message(
+            "Donation logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.",
+            ephemeral=True,
+        )
+        return
+    if not DONATION_CHANNEL_ID:
+        await interaction.response.send_message("Add DONATION_CHANNEL_ID in Railway Variables first.", ephemeral=True)
+        return
+    await interaction.response.send_modal(DonationModal())
+
+
+@bot.tree.command(name="donation-summary", description="Show the top donors based on logged donations.")
+async def donation_summary(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        worksheet = get_donations_worksheet()
+        values = await asyncio.to_thread(worksheet.get_all_values)
+        rows = values[1:] if len(values) > 1 else []
+        if not rows:
+            await interaction.followup.send("No donations have been logged yet.", ephemeral=True)
+            return
+
+        totals: dict[str, list[object]] = {}
+        for row in rows:
+            padded = list(row) + [""] * len(DONATIONS_HEADERS)
+            _logged_by, donor, amount, _proof = padded[:4]
+            donor_display = seller_identity_display(donor) or clean_text(donor)
+            key = seller_identity_key(donor) or norm(donor)
+            if not key:
+                continue
+            amount_value = amount_to_credits(amount)
+            if key not in totals:
+                totals[key] = [donor_display or "N/A", 0, 0.0, False]
+            totals[key][1] = int(totals[key][1]) + 1
+            if amount_value is not None:
+                totals[key][2] = float(totals[key][2]) + amount_value
+                totals[key][3] = True
+
+        parsed = sorted(totals.values(), key=lambda record: (float(record[2]), int(record[1])), reverse=True)
+        lines = []
+        for rank_number, record in enumerate(parsed[:10], start=1):
+            donor_name, donation_count, total_amount, has_amount = record
+            donation_word = "donation" if int(donation_count) == 1 else "donations"
+            lines.append(f"{rank_number}.  **{donor_name}**\n— {donation_count} {donation_word} — {format_credits(float(total_amount) if has_amount else None)} total")
+
+        if not lines:
+            await interaction.followup.send("No donor names found in the Donations sheet.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="Donation Totals",
+            description="\n".join(lines),
+            color=discord.Color.gold(),
+            timestamp=datetime.now(ZoneInfo(TIMEZONE)),
+        )
+        embed.set_footer(text="Synced from the Donations sheet")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as exc:
+        print(f"Donation summary error: {type(exc).__name__}: {exc}")
+        await interaction.followup.send(f"Could not load donation summary: {type(exc).__name__}: {exc}", ephemeral=True)
+
+
+async def can_setup_donations_sheet(interaction: discord.Interaction) -> bool:
+    if interaction.guild is None:
+        return False
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        member = await interaction.guild.fetch_member(interaction.user.id)
+    if member.guild_permissions.administrator:
+        return True
+    allowed_roles = {"Chat Moderator", "Rank Seller"}
+    return any(role.name in allowed_roles for role in member.roles)
+
+
+@bot.tree.command(name="setup-donations-sheet", description="Create, clean, and style the Donations Google Sheet tab.")
+@app_commands.check(can_setup_donations_sheet)
+async def setup_donations_sheet(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await asyncio.to_thread(setup_donations_sheet_layout)
+        await interaction.followup.send("Donations sheet tab was created, cleaned, and styled.", ephemeral=True)
+    except Exception as exc:
+        print(f"Donations sheet setup error: {type(exc).__name__}: {exc}")
+        await interaction.followup.send(f"Could not setup donations sheet: {type(exc).__name__}: {exc}", ephemeral=True)
+
+
+'''
+    if "DONATIONS_SHEET_NAME" not in text:
+        text = text.replace("bot.tree.add_command(sale_group)\n", donation_block + "bot.tree.add_command(sale_group)\n", 1)
+
     auto_clean_event = '''@bot.event
 async def on_message(message: discord.Message) -> None:
     if message.guild is None:
         return
 
-    cleanup_channel_id_raw = os.getenv("AUTO_CLEAN_CHANNEL_ID") or RANK_SALES_CHANNEL_ID
-    if not cleanup_channel_id_raw:
-        return
-    try:
-        cleanup_channel_id = int(cleanup_channel_id_raw)
-    except ValueError:
-        return
-    if message.channel.id != cleanup_channel_id:
+    cleanup_ids: set[int] = set()
+    for raw_id in (os.getenv("AUTO_CLEAN_CHANNEL_ID"), RANK_SALES_CHANNEL_ID, globals().get("DONATION_CHANNEL_ID")):
+        if not raw_id:
+            continue
+        try:
+            cleanup_ids.add(int(raw_id))
+        except ValueError:
+            continue
+
+    if message.channel.id not in cleanup_ids:
         return
     if getattr(message, "pinned", False):
         return
@@ -318,12 +541,15 @@ async def clean_existing_sales_channel_messages() -> None:
         return
     _sales_cleanup_done = True
 
-    cleanup_channel_id_raw = os.getenv("AUTO_CLEAN_CHANNEL_ID") or RANK_SALES_CHANNEL_ID
-    if not cleanup_channel_id_raw:
-        return
-    try:
-        cleanup_channel_id = int(cleanup_channel_id_raw)
-    except ValueError:
+    cleanup_ids: set[int] = set()
+    for raw_id in (os.getenv("AUTO_CLEAN_CHANNEL_ID"), RANK_SALES_CHANNEL_ID, globals().get("DONATION_CHANNEL_ID")):
+        if not raw_id:
+            continue
+        try:
+            cleanup_ids.add(int(raw_id))
+        except ValueError:
+            continue
+    if not cleanup_ids:
         return
 
     history_limit_raw = os.getenv("AUTO_CLEAN_HISTORY_LIMIT", "500")
@@ -332,35 +558,36 @@ async def clean_existing_sales_channel_messages() -> None:
     except ValueError:
         history_limit = 500
 
-    channel = bot.get_channel(cleanup_channel_id)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(cleanup_channel_id)
-        except discord.HTTPException:
-            return
-    if not hasattr(channel, "history"):
-        return
-
     def is_log_message(candidate: discord.Message) -> bool:
         return bool(candidate.embeds) and (candidate.author.bot or candidate.webhook_id is not None)
 
-    deleted = 0
-    async for message in channel.history(limit=history_limit):
-        if getattr(message, "pinned", False):
+    for cleanup_channel_id in cleanup_ids:
+        channel = bot.get_channel(cleanup_channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(cleanup_channel_id)
+            except discord.HTTPException:
+                continue
+        if not hasattr(channel, "history"):
             continue
-        if is_log_message(message):
-            continue
-        try:
-            await message.delete()
-            deleted += 1
-            await asyncio.sleep(0.25)
-        except (discord.NotFound, discord.Forbidden):
-            continue
-        except discord.HTTPException as exc:
-            print(f"Startup cleanup failed on a message: {type(exc).__name__}: {exc}")
-            await asyncio.sleep(1)
-    if deleted:
-        print(f"Startup cleanup deleted {deleted} old non-log message(s) from the sales channel.")
+
+        deleted = 0
+        async for message in channel.history(limit=history_limit):
+            if getattr(message, "pinned", False):
+                continue
+            if is_log_message(message):
+                continue
+            try:
+                await message.delete()
+                deleted += 1
+                await asyncio.sleep(0.25)
+            except (discord.NotFound, discord.Forbidden):
+                continue
+            except discord.HTTPException as exc:
+                print(f"Startup cleanup failed on a message: {type(exc).__name__}: {exc}")
+                await asyncio.sleep(1)
+        if deleted:
+            print(f"Startup cleanup deleted {deleted} old non-log message(s) from channel {cleanup_channel_id}.")
 
 
 '''
@@ -369,9 +596,8 @@ async def clean_existing_sales_channel_messages() -> None:
     path.write_text(text)
     print("Sale log modal now uses server Discord username automatically.")
     print("Timestamps removed from Rank Sales and Rank Seller Totals.")
-    print("Sale summary now falls back to Habbo Username when Discord Username is blank.")
     print("Similar seller names are merged before totals are built.")
-    print("Auto-clean warning enabled for non-log messages in the sales channel.")
-    print("Startup cleanup enabled for old non-log messages in the sales channel.")
+    print("Auto-clean enabled for sales and donation log channels.")
+    print("Donation logging command and Donations sheet tab enabled.")
 
 import bot
