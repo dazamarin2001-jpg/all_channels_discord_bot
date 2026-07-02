@@ -16,13 +16,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Patch bot.py commands
+      - name: Patch bot.py command names
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('bot.py')
-          text = path.read_text(encoding='utf-8')
+          path = Path("bot.py")
+          text = path.read_text(encoding="utf-8")
 
           replacements = {
               'name="rank-sale"': 'name="sale"',
@@ -33,73 +33,18 @@ jobs:
           for old, new in replacements.items():
               text = text.replace(old, new)
 
-          old_sync = '''            guild_object = discord.Object(id=int(TEST_GUILD_ID))
-            bot.tree.copy_global_to(guild=guild_object)
-            await bot.tree.sync(guild=guild_object)
-            print(f"Commands synced instantly to test server {TEST_GUILD_ID}.")'''
-          new_sync = '''            guild_object = discord.Object(id=int(TEST_GUILD_ID))
-            bot.tree.clear_commands(guild=guild_object)
-            bot.tree.copy_global_to(guild=guild_object)
-            await bot.tree.sync(guild=guild_object)
-            print(f"Commands synced instantly to test server {TEST_GUILD_ID}.")'''
-          text = text.replace(old_sync, new_sync)
-
-          if 'async def sales_summary(' not in text:
-              marker = '''    await interaction.response.send_modal(RankSaleModal())
-'''
-              summary_command = '''    await interaction.response.send_modal(RankSaleModal())
-
-
-@bot.tree.command(name="sales-summary", description="Show the top rank sellers based on logged sales.")
-async def sales_summary(interaction: discord.Interaction) -> None:
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    try:
-        worksheet = await asyncio.to_thread(get_rank_sales_worksheet)
-        values = await asyncio.to_thread(worksheet.get_all_values)
-        rows = values[1:] if len(values) > 1 else []
-
-        if not rows:
-            await interaction.followup.send("No rank sales have been logged yet.", ephemeral=True)
-            return
-
-        seller_totals = {}
-        for row in rows:
-            seller = row[1] if len(row) > 1 and row[1] else "Unknown"
-            seller_totals[seller] = seller_totals.get(seller, 0) + 1
-
-        top_sellers = sorted(seller_totals.items(), key=lambda item: item[1], reverse=True)[:10]
-        leaderboard = "\n".join(f"{index}. {seller}: {count}" for index, (seller, count) in enumerate(top_sellers, start=1))
-
-        embed = discord.Embed(
-            title="Rank Sales Summary",
-            description=leaderboard,
-            color=discord.Color.green(),
-            timestamp=datetime.now(ZoneInfo(TIMEZONE)),
-        )
-        embed.add_field(name="Total Sales Logged", value=str(len(rows)), inline=False)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except Exception as exc:
-        await interaction.followup.send(f"Could not load sales summary: {type(exc).__name__}: {exc}", ephemeral=True)
-'''
-              if marker not in text:
-                  raise SystemExit('Could not find rank sale command marker')
-              text = text.replace(marker, summary_command, 1)
-
-          path.write_text(text, encoding='utf-8')
+          path.write_text(text, encoding="utf-8")
           PY
 
-          rm -f sitecustomize.py
-
-      - name: Commit command patch
+      - name: Commit command rename
         run: |
           if git diff --quiet; then
-            echo "No command changes needed."
+            echo "No command rename changes needed."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add bot.py
-          git add -u
-          git commit -m "Add sales summary slash command"
+          git commit -m "Rename rank sales summary command"
           git push
