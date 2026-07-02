@@ -19,9 +19,24 @@ def upsert_on_message_event(text: str, replacement: str) -> str:
         return text.replace(marker, replacement.rstrip() + "\n\n" + marker, 1)
     next_command = text.find("\n\n@bot.tree.command", start + 1)
     next_event = text.find("\n\n@bot.event", start + 1)
-    candidates = [pos for pos in (next_command, next_event) if pos != -1]
+    next_listener = text.find("\n\n@bot.listen", start + 1)
+    candidates = [pos for pos in (next_command, next_event, next_listener) if pos != -1]
     end = min(candidates) if candidates else len(text)
     return text[:start] + replacement.rstrip() + text[end:]
+
+
+def upsert_startup_cleanup_listener(text: str, replacement: str) -> str:
+    start = text.find("_sales_cleanup_done = False")
+    if start != -1:
+        next_command = text.find("\n\n@bot.tree.command", start + 1)
+        next_event = text.find("\n\n@bot.event", start + 1)
+        next_listener = text.find("\n\n@bot.listen", start + 1)
+        candidates = [pos for pos in (next_command, next_event, next_listener) if pos != -1]
+        end = min(candidates) if candidates else len(text)
+        return text[:start] + replacement.rstrip() + text[end:]
+
+    marker = '@bot.tree.command(description="Check whether the bot is responding.")\n'
+    return text.replace(marker, replacement.rstrip() + "\n\n" + marker, 1)
 
 
 path = Path("bot.py")
@@ -293,11 +308,70 @@ async def on_message(message: discord.Message) -> None:
 '''
     text = upsert_on_message_event(text, auto_clean_event)
 
+    startup_cleanup_listener = '''_sales_cleanup_done = False
+
+
+@bot.listen("on_ready")
+async def clean_existing_sales_channel_messages() -> None:
+    global _sales_cleanup_done
+    if _sales_cleanup_done:
+        return
+    _sales_cleanup_done = True
+
+    cleanup_channel_id_raw = os.getenv("AUTO_CLEAN_CHANNEL_ID") or RANK_SALES_CHANNEL_ID
+    if not cleanup_channel_id_raw:
+        return
+    try:
+        cleanup_channel_id = int(cleanup_channel_id_raw)
+    except ValueError:
+        return
+
+    history_limit_raw = os.getenv("AUTO_CLEAN_HISTORY_LIMIT", "500")
+    try:
+        history_limit = max(1, min(int(history_limit_raw), 2000))
+    except ValueError:
+        history_limit = 500
+
+    channel = bot.get_channel(cleanup_channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(cleanup_channel_id)
+        except discord.HTTPException:
+            return
+    if not hasattr(channel, "history"):
+        return
+
+    def is_log_message(candidate: discord.Message) -> bool:
+        return bool(candidate.embeds) and (candidate.author.bot or candidate.webhook_id is not None)
+
+    deleted = 0
+    async for message in channel.history(limit=history_limit):
+        if getattr(message, "pinned", False):
+            continue
+        if is_log_message(message):
+            continue
+        try:
+            await message.delete()
+            deleted += 1
+            await asyncio.sleep(0.25)
+        except (discord.NotFound, discord.Forbidden):
+            continue
+        except discord.HTTPException as exc:
+            print(f"Startup cleanup failed on a message: {type(exc).__name__}: {exc}")
+            await asyncio.sleep(1)
+    if deleted:
+        print(f"Startup cleanup deleted {deleted} old non-log message(s) from the sales channel.")
+
+
+'''
+    text = upsert_startup_cleanup_listener(text, startup_cleanup_listener)
+
     path.write_text(text)
     print("Sale log modal now uses server Discord username automatically.")
     print("Timestamps removed from Rank Sales and Rank Seller Totals.")
     print("Sale summary now falls back to Habbo Username when Discord Username is blank.")
     print("Similar seller names are merged before totals are built.")
     print("Auto-clean warning enabled for non-log messages in the sales channel.")
+    print("Startup cleanup enabled for old non-log messages in the sales channel.")
 
 import bot
