@@ -711,8 +711,23 @@ async def sale_summary(interaction: discord.Interaction) -> None:
 bot.tree.add_command(sale_group)
 
 
+async def can_setup_rank_sales_sheet(interaction: discord.Interaction) -> bool:
+    if interaction.guild is None:
+        return False
+
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        member = await interaction.guild.fetch_member(interaction.user.id)
+
+    if member.guild_permissions.administrator:
+        return True
+
+    allowed_roles = {"Chat Moderator", "Rank Seller"}
+    return any(role.name in allowed_roles for role in member.roles)
+
+
 @bot.tree.command(name="setup-rank-sales-sheet", description="Clean, repair, and style the rank sales Google Sheet.")
-@app_commands.checks.has_permissions(administrator=True)
+@app_commands.check(can_setup_rank_sales_sheet)
 async def setup_rank_sales_sheet(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
