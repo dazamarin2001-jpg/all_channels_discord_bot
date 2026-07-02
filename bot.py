@@ -242,11 +242,11 @@ class RankSaleModal(discord.ui.Modal, title="Log Rank Sale"):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
-            seller_habbo = clean_text(self.seller_habbo.value)
-            buyer = clean_text(self.buyer.value)
-            rank = clean_text(self.rank.value)
-            amount = clean_text(self.amount.value)
-            proof = clean_text(self.proof.value) or "N/A"
+            seller_habbo = clean_text(self.children[0].value)
+buyer = clean_text(self.children[1].value)
+rank = clean_text(self.children[2].value)
+amount = clean_text(self.children[3].value)
+proof = clean_text(self.children[4].value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
 
