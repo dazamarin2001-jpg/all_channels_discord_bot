@@ -12,39 +12,40 @@ def replace_function(text: str, name: str, replacement: str) -> str:
     return text[:start] + replacement.rstrip() + text[next_start:]
 
 
-def upsert_on_message_event(text: str, replacement: str) -> str:
-    start = text.find("@bot.event\nasync def on_message(")
+def upsert_event(text: str, event_signature: str, replacement: str) -> str:
+    start = text.find(event_signature)
     if start == -1:
         marker = '@bot.tree.command(description="Check whether the bot is responding.")\n'
         return text.replace(marker, replacement.rstrip() + "\n\n" + marker, 1)
-    next_command = text.find("\n\n@bot.tree.command", start + 1)
-    next_event = text.find("\n\n@bot.event", start + 1)
-    next_listener = text.find("\n\n@bot.listen", start + 1)
-    candidates = [pos for pos in (next_command, next_event, next_listener) if pos != -1]
+    candidates = []
+    for marker in ("\n\n@bot.tree.command", "\n\n@bot.event", "\n\n@bot.listen"):
+        pos = text.find(marker, start + 1)
+        if pos != -1:
+            candidates.append(pos)
     end = min(candidates) if candidates else len(text)
     return text[:start] + replacement.rstrip() + text[end:]
-
-
-def upsert_startup_cleanup_listener(text: str, replacement: str) -> str:
-    start = text.find("_cleanup_startup_done = False")
-    if start == -1:
-        start = text.find("_sales_cleanup_done = False")
-    if start != -1:
-        next_command = text.find("\n\n@bot.tree.command", start + 1)
-        next_event = text.find("\n\n@bot.event", start + 1)
-        next_listener = text.find("\n\n@bot.listen", start + 1)
-        candidates = [pos for pos in (next_command, next_event, next_listener) if pos != -1]
-        end = min(candidates) if candidates else len(text)
-        return text[:start] + replacement.rstrip() + text[end:]
-    marker = '@bot.tree.command(description="Check whether the bot is responding.")\n'
-    return text.replace(marker, replacement.rstrip() + "\n\n" + marker, 1)
 
 
 path = Path("bot.py")
 if path.exists():
     text = path.read_text()
 
-    # Sales sheets: remove timestamp columns from both tabs.
+    # Remove any old generated donation/cleanup blocks so a bad runtime patch cannot keep duplicating code.
+    text = re.sub(
+        r'\n\nDONATIONS_SHEET_NAME = os\.getenv\("DONATIONS_SHEET_NAME"[\s\S]*?\n\nbot\.tree\.add_command\(sale_group\)',
+        '\n\nbot.tree.add_command(sale_group)',
+        text,
+        count=1,
+    )
+    text = re.sub(
+        r'\n\nCLEANUP_CHANNELS_(?:FILE|SHEET_NAME)[\s\S]*?\n\nbot\.tree\.add_command\(sale_group\)',
+        '\n\nbot.tree.add_command(sale_group)',
+        text,
+        count=1,
+    )
+    text = text.replace("\nbot.tree.add_command(cleanup_group)\n", "\n")
+
+    # Remove timestamp columns from sales sheets.
     text = re.sub(
         r'RANK_SALES_HEADERS = \[[\s\S]*?\]\n\nRANK_SELLER_TOTALS_HEADERS',
         '''RANK_SALES_HEADERS = [
@@ -75,8 +76,8 @@ GOOGLE_SCOPES''',
         count=1,
     )
 
-    # Helpers for merging similar names like "Missbluegerlx2 | Eshly" with "Missbluegerlx2".
-    helpers = '''def seller_identity_display(value: object) -> str:
+    # Helpers to merge similar names like "Missbluegerlx2 | Eshly" and "Missbluegerlx2".
+    seller_helpers = '''def seller_identity_display(value: object) -> str:
     text = clean_text(value)
     if not text or text.casefold() == "n/a":
         return ""
@@ -93,62 +94,62 @@ def seller_identity_key(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "", display)
 '''
     if "def seller_identity_display(" not in text:
-        text = text.replace("\n\ndef amount_to_credits", "\n\n" + helpers + "\ndef amount_to_credits", 1)
+        text = text.replace("\n\ndef amount_to_credits", "\n\n" + seller_helpers + "\ndef amount_to_credits", 1)
 
-    # Sale modal: remove Seller Habbo field; use server display name.
-    seller_field = '''    seller_habbo = discord.ui.TextInput(
+    # Sale modal: remove Seller Habbo field and use the server display name automatically.
+    text = text.replace('''    seller_habbo = discord.ui.TextInput(
         label="Seller Habbo Username",
         placeholder="Example: Dazamarin",
         required=True,
         max_length=80,
     )
-'''
-    text = text.replace(seller_field, "", 1)
+''', "", 1)
 
-    broken_submit = '''            seller_habbo = clean_text(self.children[0].value)
+    new_sale_values = '''            buyer = clean_text(self.children[0].value)
+            rank = clean_text(self.children[1].value)
+            amount = clean_text(self.children[2].value)
+            proof = clean_text(self.children[3].value) or "N/A"
+            discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
+            seller_habbo = discord_seller
+'''
+    sale_value_patterns = [
+        '''            seller_habbo = clean_text(self.children[0].value)
 buyer = clean_text(self.children[1].value)
 rank = clean_text(self.children[2].value)
 amount = clean_text(self.children[3].value)
 proof = clean_text(self.children[4].value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
-'''
-    old_submit = '''            seller_habbo = clean_text(self.children[0].value)
+''',
+        '''            seller_habbo = clean_text(self.children[0].value)
             buyer = clean_text(self.children[1].value)
             rank = clean_text(self.children[2].value)
             amount = clean_text(self.children[3].value)
             proof = clean_text(self.children[4].value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
-'''
-    already_submit = '''            buyer = clean_text(self.children[0].value)
+''',
+        '''            buyer = clean_text(self.children[0].value)
             rank = clean_text(self.children[1].value)
             amount = clean_text(self.children[2].value)
             proof = clean_text(self.children[3].value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
             seller_habbo = discord_seller
-'''
-    named_submit = '''            seller_habbo = clean_text(self.seller_habbo.value)
+''',
+        '''            seller_habbo = clean_text(self.seller_habbo.value)
             buyer = clean_text(self.buyer.value)
             rank = clean_text(self.rank.value)
             amount = clean_text(self.amount.value)
             proof = clean_text(self.proof.value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
-'''
-    new_submit = '''            buyer = clean_text(self.children[0].value)
-            rank = clean_text(self.children[1].value)
-            amount = clean_text(self.children[2].value)
-            proof = clean_text(self.children[3].value) or "N/A"
-            discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
-            seller_habbo = discord_seller
-'''
-    for old in (broken_submit, old_submit, already_submit, named_submit):
-        if old in text:
-            text = text.replace(old, new_submit, 1)
+''',
+    ]
+    for pattern in sale_value_patterns:
+        if pattern in text:
+            text = text.replace(pattern, new_sale_values, 1)
             break
-
     text = text.replace("row = [timestamp, discord_seller, seller_habbo, buyer, rank, amount, proof]", "row = [discord_seller, seller_habbo, buyer, rank, amount, proof]", 1)
     text = text.replace('            embed.add_field(name="Seller Habbo", value=seller_habbo, inline=True)', '            embed.add_field(name="Server Username", value=discord_seller, inline=True)', 1)
 
@@ -156,12 +157,10 @@ proof = clean_text(self.children[4].value) or "N/A"
     cleaned = [RANK_SALES_HEADERS]
     if not values:
         return cleaned
-
     old_header = [cell.strip().casefold() for cell in values[0]]
     has_old_private_columns = "seller id" in old_header or "channel id" in old_header or "channel" in old_header
     looks_like_totals = old_header[:len(RANK_SELLER_TOTALS_HEADERS)] == [h.casefold() for h in RANK_SELLER_TOTALS_HEADERS]
     has_timestamp_column = bool(old_header) and old_header[0] == "timestamp"
-
     for row in values[1:]:
         if not any(str(cell).strip() for cell in row):
             continue
@@ -182,8 +181,6 @@ proof = clean_text(self.children[4].value) or "N/A"
     for row in rows:
         padded = list(row) + [""] * len(RANK_SALES_HEADERS)
         discord_seller, seller_habbo, _buyer, rank_sold, amount, _proof = padded[:6]
-        seller_habbo = clean_text(seller_habbo)
-        discord_seller = clean_text(discord_seller)
         seller_display = seller_identity_display(seller_habbo) or seller_identity_display(discord_seller)
         key = seller_identity_key(seller_habbo) or seller_identity_key(discord_seller)
         if not key:
@@ -224,7 +221,6 @@ proof = clean_text(self.children[4].value) or "N/A"
     target_habbo = seller_identity_key(seller_habbo)
     target_discord = seller_identity_key(discord_seller)
     new_amount = amount_to_credits(amount)
-
     for index, row in enumerate(rows, start=2):
         padded = list(row) + [""] * len(RANK_SELLER_TOTALS_HEADERS)
         same_habbo = target_habbo and seller_identity_key(padded[1]) == target_habbo
@@ -241,26 +237,15 @@ proof = clean_text(self.children[4].value) or "N/A"
         totals_sheet.update(range_name=f"A{index}:E{index}", values=[updated], value_input_option="USER_ENTERED")
         apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))
         return
-
     new_row = [seller_display or "N/A", seller_display or "N/A", 1, format_credits(new_amount), clean_text(rank_sold) or "N/A"]
     next_row = max(len(values) + 1, 2)
     totals_sheet.update(range_name=f"A{next_row}:E{next_row}", values=[new_row], value_input_option="USER_ENTERED")
     apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))
 ''')
 
-    text = text.replace(
-        '''            discord_username = padded[0].strip()
-            sales_count = padded[2].strip() or "0"''',
-        '''            discord_username = padded[0].strip()
-            habbo_username = padded[1].strip()
-            if not discord_username or discord_username.casefold() == "n/a":
-                discord_username = habbo_username
-            sales_count = padded[2].strip() or "0"''',
-        1,
-    )
     text = text.replace('rank_sales.batch_clear(["H:Z"])', 'rank_sales.batch_clear(["G:Z"])')
 
-    # Donation logging setup: /donate with separate donation channel and Donations sheet tab.
+    # Add donation logging commands.
     donation_block = '''DONATIONS_SHEET_NAME = os.getenv("DONATIONS_SHEET_NAME", "Donations")
 DONATION_CHANNEL_ID = os.getenv("DONATION_CHANNEL_ID") or os.getenv("DONATIONS_CHANNEL_ID")
 DONATIONS_HEADERS = ["Logged By", "Donor Habbo", "Amount", "Proof / Notes"]
@@ -271,23 +256,16 @@ def get_donations_worksheet(spreadsheet=None):
     return get_or_create_worksheet(spreadsheet, DONATIONS_SHEET_NAME, DONATIONS_HEADERS)
 
 
-def clean_donation_rows(values: list[list[str]]) -> list[list[str]]:
-    cleaned = [DONATIONS_HEADERS]
-    if not values:
-        return cleaned
-    for row in values[1:]:
-        if not any(str(cell).strip() for cell in row):
-            continue
-        padded = list(row) + [""] * len(DONATIONS_HEADERS)
-        cleaned.append(padded[:len(DONATIONS_HEADERS)])
-    return cleaned
-
-
 def setup_donations_sheet_layout() -> None:
     spreadsheet = get_spreadsheet()
     sheet = get_donations_worksheet(spreadsheet)
     values = sheet.get_all_values()
-    cleaned = clean_donation_rows(values)
+    cleaned = [DONATIONS_HEADERS]
+    if values:
+        for row in values[1:]:
+            if any(str(cell).strip() for cell in row):
+                padded = list(row) + [""] * len(DONATIONS_HEADERS)
+                cleaned.append(padded[:len(DONATIONS_HEADERS)])
     sheet.clear()
     sheet.update(range_name="A1", values=cleaned, value_input_option="USER_ENTERED")
     try:
@@ -340,8 +318,7 @@ class DonationModal(discord.ui.Modal, title="Log Donation"):
             amount = clean_text(self.amount.value)
             proof = clean_text(self.proof.value) or "N/A"
             logged_by = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
-            row = [logged_by, donor, amount, proof]
-            await asyncio.to_thread(append_donation_to_sheet, row)
+            await asyncio.to_thread(append_donation_to_sheet, [logged_by, donor, amount, proof])
             embed = discord.Embed(title="Donation Logged", color=discord.Color.gold(), timestamp=datetime.now(ZoneInfo(TIMEZONE)))
             embed.add_field(name="Logged By", value=interaction.user.mention, inline=True)
             embed.add_field(name="Donor", value=donor, inline=True)
@@ -390,8 +367,8 @@ async def setup_donations_sheet(interaction: discord.Interaction) -> None:
     if "DONATIONS_SHEET_NAME" not in text:
         text = text.replace("bot.tree.add_command(sale_group)\n", donation_block + "bot.tree.add_command(sale_group)\n", 1)
 
-    # Clean-up crew setup. No Google Sheet; command-enabled channels are saved to a small local JSON file.
-    cleanup_block = '''CLEANUP_CHANNELS_FILE = Path(os.getenv("CLEANUP_CHANNELS_FILE", "cleanup_channels.json"))
+    # Add cleanup commands. No Google Sheet. Command-enabled channels are saved to a small local JSON file.
+    cleanup_block = '''CLEANUP_CHANNELS_FILE = os.getenv("CLEANUP_CHANNELS_FILE", "cleanup_channels.json")
 EXTRA_CLEANUP_CHANNEL_IDS: set[int] = set()
 
 
@@ -414,10 +391,11 @@ def get_static_cleanup_channel_ids() -> set[int]:
 
 def load_extra_cleanup_channel_ids_from_file() -> set[int]:
     EXTRA_CLEANUP_CHANNEL_IDS.clear()
-    if not CLEANUP_CHANNELS_FILE.exists():
+    if not os.path.exists(CLEANUP_CHANNELS_FILE):
         return set(EXTRA_CLEANUP_CHANNEL_IDS)
     try:
-        data = json.loads(CLEANUP_CHANNELS_FILE.read_text())
+        with open(CLEANUP_CHANNELS_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
         for entry in data.get("channels", []):
             try:
                 EXTRA_CLEANUP_CHANNEL_IDS.add(int(entry.get("channel_id")))
@@ -430,7 +408,8 @@ def load_extra_cleanup_channel_ids_from_file() -> set[int]:
 
 def save_extra_cleanup_channels_to_file() -> None:
     payload = {"channels": [{"channel_id": str(channel_id)} for channel_id in sorted(EXTRA_CLEANUP_CHANNEL_IDS)]}
-    CLEANUP_CHANNELS_FILE.write_text(json.dumps(payload, indent=2))
+    with open(CLEANUP_CHANNELS_FILE, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
 
 
 def get_all_cleanup_channel_ids() -> set[int]:
@@ -547,7 +526,7 @@ async def cleanup_list(interaction: discord.Interaction) -> None:
         for channel_id in ids[:25]:
             channel = interaction.guild.get_channel(channel_id) if interaction.guild else None
             lines.append(channel.mention if channel else f"`{channel_id}`")
-        await interaction.followup.send("🧹 Clean-up crew is enabled in:\n" + "\n".join(lines), ephemeral=True)
+        await interaction.followup.send("🧹 Clean-up crew is enabled in:" + chr(10) + chr(10).join(lines), ephemeral=True)
     except Exception as exc:
         print(f"Cleanup list error: {type(exc).__name__}: {exc}")
         await interaction.followup.send(f"Could not list cleanup channels: {type(exc).__name__}: {exc}", ephemeral=True)
@@ -559,11 +538,10 @@ async def cleanup_list(interaction: discord.Interaction) -> None:
     if "bot.tree.add_command(cleanup_group)" not in text:
         text = text.replace("bot.tree.add_command(sale_group)\n", "bot.tree.add_command(sale_group)\nbot.tree.add_command(cleanup_group)\n", 1)
 
-    auto_clean_event = '''@bot.event
+    on_message_event = '''@bot.event
 async def on_message(message: discord.Message) -> None:
     if message.guild is None:
         return
-
     cleanup_ids = get_all_cleanup_channel_ids() if "get_all_cleanup_channel_ids" in globals() else set()
     if message.channel.id not in cleanup_ids:
         return
@@ -571,16 +549,12 @@ async def on_message(message: discord.Message) -> None:
         return
     if is_cleanup_log_message(message):
         return
-
     warning = None
     if not message.author.bot and message.webhook_id is None:
         try:
-            warning = await message.channel.send(
-                "🧹 **Clean-up crew is here!** This channel is for logs only. Non-log messages will be swept away in **10 seconds** to keep a clean environment."
-            )
+            warning = await message.channel.send("🧹 **Clean-up crew is here!** This channel is for logs only. Non-log messages will be swept away in **10 seconds** to keep a clean environment.")
         except discord.HTTPException:
             warning = None
-
     await asyncio.sleep(10)
     try:
         current_message = await message.channel.fetch_message(message.id)
@@ -596,12 +570,10 @@ async def on_message(message: discord.Message) -> None:
         pass
     except discord.HTTPException as exc:
         print(f"Auto cleanup failed: {type(exc).__name__}: {exc}")
-
-
 '''
-    text = upsert_on_message_event(text, auto_clean_event)
+    text = upsert_event(text, "@bot.event\nasync def on_message(", on_message_event)
 
-    startup_cleanup_listener = '''_cleanup_startup_done = False
+    ready_listener = '''_cleanup_startup_done = False
 
 
 @bot.listen("on_ready")
@@ -610,13 +582,8 @@ async def clean_existing_cleanup_channel_messages() -> None:
     if _cleanup_startup_done:
         return
     _cleanup_startup_done = True
-
     await asyncio.to_thread(load_extra_cleanup_channel_ids_from_file)
-    cleanup_ids = get_all_cleanup_channel_ids()
-    if not cleanup_ids:
-        return
-
-    for cleanup_channel_id in cleanup_ids:
+    for cleanup_channel_id in get_all_cleanup_channel_ids():
         channel = bot.get_channel(cleanup_channel_id)
         if channel is None:
             try:
@@ -628,16 +595,14 @@ async def clean_existing_cleanup_channel_messages() -> None:
         deleted = await cleanup_existing_non_logs_in_channel(channel)
         if deleted:
             print(f"Startup cleanup deleted {deleted} old non-log message(s) from channel {cleanup_channel_id}.")
-
-
 '''
-    text = upsert_startup_cleanup_listener(text, startup_cleanup_listener)
+    text = upsert_event(text, "_cleanup_startup_done = False", ready_listener)
 
     path.write_text(text)
     print("Sale log modal now uses server Discord username automatically.")
     print("Timestamps removed from Rank Sales and Rank Seller Totals.")
     print("Similar seller names are merged before totals are built.")
     print("Donation logging command and Donations sheet tab enabled.")
-    print("Cleanup crew commands enabled with no Google Sheet and 10-second warning.")
+    print("Cleanup crew commands fixed: no Google Sheet storage, 10-second warning.")
 
 import bot
