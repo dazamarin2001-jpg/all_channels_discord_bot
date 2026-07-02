@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -20,8 +21,15 @@ RANK_SALES_CHANNEL_ID = os.getenv("RANK_SALES_CHANNEL_ID") or os.getenv("LOG_CHA
 SALES_ROLE_ID = os.getenv("SALES_ROLE_ID")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID") or os.getenv("GOOGLE_SHEET_ID")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
-RANK_SALES_SHEET_NAME = os.getenv("RANK_SALES_SHEET_NAME", "Rank Sales")
 TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")
+
+RANK_SELLER_TOTALS_SHEET_NAME = os.getenv("RANK_SELLER_TOTALS_SHEET_NAME", "Rank Seller Totals")
+_CONFIGURED_RANK_SALES_SHEET_NAME = os.getenv("RANK_SALES_SHEET_NAME", "Rank Sales")
+RANK_SALES_SHEET_NAME = (
+    "Rank Sales"
+    if _CONFIGURED_RANK_SALES_SHEET_NAME.strip().casefold() == RANK_SELLER_TOTALS_SHEET_NAME.strip().casefold()
+    else _CONFIGURED_RANK_SALES_SHEET_NAME
+)
 
 RANK_SALES_HEADERS = [
     "Timestamp",
@@ -31,6 +39,15 @@ RANK_SALES_HEADERS = [
     "Rank Sold",
     "Amount",
     "Proof / Notes",
+]
+
+RANK_SELLER_TOTALS_HEADERS = [
+    "Discord Username",
+    "Habbo Username",
+    "Total Sales",
+    "Total Amount Sold",
+    "Last Sale",
+    "Last Rank Sold",
 ]
 
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -159,6 +176,35 @@ STAFF_MARKERS = (
 )
 
 
+def clean_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def norm(value: object) -> str:
+    return clean_text(value).casefold()
+
+
+def amount_to_credits(value: object) -> float | None:
+    text = clean_text(value).lower().replace(",", "")
+    if not text or text in {"n/a", "na", "none", "-"}:
+        return None
+    match = re.search(r"\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    amount = float(match.group(0))
+    if "gb" in text or "gold bar" in text or "gold bars" in text:
+        amount *= 50
+    return amount
+
+
+def format_credits(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    if float(value).is_integer():
+        return f"{int(value)}c"
+    return f"{value:g}c"
+
+
 class RankSaleModal(discord.ui.Modal, title="Log Rank Sale"):
     seller_habbo = discord.ui.TextInput(
         label="Seller Habbo Username",
@@ -196,24 +242,15 @@ class RankSaleModal(discord.ui.Modal, title="Log Rank Sale"):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
-            seller_habbo = str(self.seller_habbo.value).strip()
-            buyer = str(self.buyer.value).strip()
-            rank = str(self.rank.value).strip()
-            amount = str(self.amount.value).strip()
-            proof = str(self.proof.value).strip() or "N/A"
-
+            seller_habbo = clean_text(self.seller_habbo.value)
+            buyer = clean_text(self.buyer.value)
+            rank = clean_text(self.rank.value)
+            amount = clean_text(self.amount.value)
+            proof = clean_text(self.proof.value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
+            discord_seller = getattr(interaction.user, "display_name", interaction.user.name)
 
-            row = [
-                timestamp,
-                getattr(interaction.user, "display_name", interaction.user.name),
-                seller_habbo,
-                buyer,
-                rank,
-                amount,
-                proof,
-            ]
-
+            row = [timestamp, discord_seller, seller_habbo, buyer, rank, amount, proof]
             await asyncio.to_thread(append_rank_sale_to_sheet, row)
 
             embed = discord.Embed(
@@ -301,7 +338,7 @@ def get_overwrites(guild: discord.Guild, category_name: str, channel_name: str, 
     return None
 
 
-def get_rank_sales_worksheet():
+def get_spreadsheet():
     if not GOOGLE_CREDENTIALS_JSON:
         raise RuntimeError("GOOGLE_CREDENTIALS_JSON is missing in Railway Variables.")
     if not SPREADSHEET_ID:
@@ -310,14 +347,29 @@ def get_rank_sales_worksheet():
     credentials_info = json.loads(GOOGLE_CREDENTIALS_JSON)
     credentials = Credentials.from_service_account_info(credentials_info, scopes=GOOGLE_SCOPES)
     sheets_client = gspread.authorize(credentials)
-    spreadsheet = sheets_client.open_by_key(SPREADSHEET_ID)
+    return sheets_client.open_by_key(SPREADSHEET_ID)
 
+
+def get_or_create_worksheet(spreadsheet, title: str, headers: list[str], rows: int = 1000):
     try:
-        worksheet = spreadsheet.worksheet(RANK_SALES_SHEET_NAME)
+        worksheet = spreadsheet.worksheet(title)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=RANK_SALES_SHEET_NAME, rows=1000, cols=len(RANK_SALES_HEADERS))
+        worksheet = spreadsheet.add_worksheet(title=title, rows=rows, cols=len(headers))
 
+    values = worksheet.get_all_values()
+    current_header = values[0][:len(headers)] if values else []
+    if current_header != headers:
+        worksheet.update(range_name="A1", values=[headers], value_input_option="USER_ENTERED")
     return worksheet
+
+
+def get_rank_sales_worksheet():
+    return get_or_create_worksheet(get_spreadsheet(), RANK_SALES_SHEET_NAME, RANK_SALES_HEADERS)
+
+
+def get_rank_seller_totals_worksheet(spreadsheet=None):
+    spreadsheet = spreadsheet or get_spreadsheet()
+    return get_or_create_worksheet(spreadsheet, RANK_SELLER_TOTALS_SHEET_NAME, RANK_SELLER_TOTALS_HEADERS)
 
 
 def clean_rank_sales_rows(values: list[list[str]]) -> list[list[str]]:
@@ -327,31 +379,26 @@ def clean_rank_sales_rows(values: list[list[str]]) -> list[list[str]]:
 
     old_header = [cell.strip().casefold() for cell in values[0]]
     has_old_private_columns = "seller id" in old_header or "channel id" in old_header or "channel" in old_header
+    looks_like_totals = old_header[:len(RANK_SELLER_TOTALS_HEADERS)] == [h.casefold() for h in RANK_SELLER_TOTALS_HEADERS]
 
     for row in values[1:]:
         if not any(str(cell).strip() for cell in row):
             continue
-
         padded = list(row) + [""] * 12
+
+        if looks_like_totals:
+            continue
         if has_old_private_columns:
-            cleaned.append([
-                padded[0],  # Timestamp
-                padded[1],  # Discord Seller
-                padded[3],  # Seller Habbo
-                padded[4],  # Buyer
-                padded[5],  # Rank Sold
-                padded[6],  # Amount
-                padded[7],  # Proof / Notes
-            ])
+            cleaned.append([padded[0], padded[1], padded[3], padded[4], padded[5], padded[6], padded[7]])
         else:
             cleaned.append(padded[:len(RANK_SALES_HEADERS)])
-
     return cleaned
 
 
-def apply_rank_sales_sheet_style(worksheet) -> None:
+def apply_sales_sheet_style(worksheet, columns: int) -> None:
     try:
-        worksheet.format("A1:G1", {
+        last_col = chr(ord("A") + columns - 1)
+        worksheet.format(f"A1:{last_col}1", {
             "backgroundColor": {"red": 0.18, "green": 0.08, "blue": 0.36},
             "textFormat": {
                 "foregroundColor": {"red": 1, "green": 1, "blue": 1},
@@ -361,115 +408,169 @@ def apply_rank_sales_sheet_style(worksheet) -> None:
             "horizontalAlignment": "CENTER",
             "verticalAlignment": "MIDDLE",
         })
-        worksheet.format("A2:G1000", {
+        worksheet.format(f"A2:{last_col}1000", {
             "backgroundColor": {"red": 0.97, "green": 0.95, "blue": 1.0},
             "textFormat": {"foregroundColor": {"red": 0.08, "green": 0.08, "blue": 0.12}},
+            "horizontalAlignment": "CENTER",
             "verticalAlignment": "MIDDLE",
         })
-        worksheet.format("G:G", {"wrapStrategy": "WRAP", "horizontalAlignment": "LEFT"})
-        worksheet.format("A:F", {"horizontalAlignment": "CENTER"})
-
         try:
             worksheet.freeze(rows=1)
         except Exception:
-            worksheet.spreadsheet.batch_update({
-                "requests": [{
-                    "updateSheetProperties": {
-                        "properties": {
-                            "sheetId": worksheet.id,
-                            "gridProperties": {"frozenRowCount": 1},
-                        },
-                        "fields": "gridProperties.frozenRowCount",
-                    }
-                }]
-            })
-
+            pass
         try:
-            worksheet.columns_auto_resize(0, 7)
+            worksheet.columns_auto_resize(0, columns)
         except Exception:
-            worksheet.spreadsheet.batch_update({
-                "requests": [{
-                    "autoResizeDimensions": {
-                        "dimensions": {
-                            "sheetId": worksheet.id,
-                            "dimension": "COLUMNS",
-                            "startIndex": 0,
-                            "endIndex": 7,
-                        }
-                    }
-                }]
-            })
-
-        worksheet.spreadsheet.batch_update({
-            "requests": [{
-                "updateDimensionProperties": {
-                    "range": {
-                        "sheetId": worksheet.id,
-                        "dimension": "COLUMNS",
-                        "startIndex": 6,
-                        "endIndex": 7,
-                    },
-                    "properties": {"pixelSize": 350},
-                    "fields": "pixelSize",
-                }
-            }]
-        })
+            pass
     except Exception as exc:
-        print(f"Rank sales sheet style warning: {type(exc).__name__}: {exc}")
+        print(f"Sheet style warning: {type(exc).__name__}: {exc}")
+
+
+def aggregate_rank_sales(rows: list[list[str]]) -> dict[str, list[object]]:
+    totals: dict[str, list[object]] = {}
+    for row in rows:
+        padded = list(row) + [""] * len(RANK_SALES_HEADERS)
+        timestamp, discord_seller, seller_habbo, _buyer, rank_sold, amount, _proof = padded[:7]
+        seller_habbo = clean_text(seller_habbo)
+        discord_seller = clean_text(discord_seller)
+        key = norm(seller_habbo) or norm(discord_seller)
+        if not key:
+            continue
+
+        amount_value = amount_to_credits(amount)
+        if key not in totals:
+            totals[key] = [discord_seller or "N/A", seller_habbo or "N/A", 0, 0.0, timestamp or "N/A", rank_sold or "N/A", False]
+        record = totals[key]
+        record[0] = discord_seller or record[0]
+        record[1] = seller_habbo or record[1]
+        record[2] = int(record[2]) + 1
+        if amount_value is not None:
+            record[3] = float(record[3]) + amount_value
+            record[6] = True
+        record[4] = timestamp or record[4]
+        record[5] = rank_sold or record[5]
+    return totals
+
+
+def write_rank_seller_totals(spreadsheet, raw_rows: list[list[str]]) -> None:
+    totals_sheet = get_rank_seller_totals_worksheet(spreadsheet)
+    totals = aggregate_rank_sales(raw_rows)
+    output = [RANK_SELLER_TOTALS_HEADERS]
+    for record in totals.values():
+        has_amount = bool(record[6])
+        output.append([
+            record[0],
+            record[1],
+            record[2],
+            format_credits(float(record[3]) if has_amount else None),
+            record[4],
+            record[5],
+        ])
+
+    totals_sheet.clear()
+    totals_sheet.update(range_name="A1", values=output, value_input_option="USER_ENTERED")
+    apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))
 
 
 def setup_rank_sales_sheet_layout() -> None:
-    worksheet = get_rank_sales_worksheet()
-    values = worksheet.get_all_values()
+    spreadsheet = get_spreadsheet()
+    rank_sales = get_or_create_worksheet(spreadsheet, RANK_SALES_SHEET_NAME, RANK_SALES_HEADERS)
+    values = rank_sales.get_all_values()
     cleaned = clean_rank_sales_rows(values)
 
-    worksheet.clear()
-    worksheet.update(range_name="A1", values=cleaned, value_input_option="USER_ENTERED")
-
+    rank_sales.clear()
+    rank_sales.update(range_name="A1", values=cleaned, value_input_option="USER_ENTERED")
     try:
-        worksheet.batch_clear(["H:Z"])
+        rank_sales.batch_clear(["H:Z"])
     except Exception:
         pass
+    apply_sales_sheet_style(rank_sales, len(RANK_SALES_HEADERS))
+    write_rank_seller_totals(spreadsheet, cleaned[1:])
 
-    apply_rank_sales_sheet_style(worksheet)
+
+def update_rank_seller_totals_for_sale(spreadsheet, sale_row: list[str]) -> None:
+    totals_sheet = get_rank_seller_totals_worksheet(spreadsheet)
+    values = totals_sheet.get_all_values()
+    rows = values[1:] if len(values) > 1 else []
+
+    timestamp, discord_seller, seller_habbo, _buyer, rank_sold, amount, _proof = (sale_row + [""] * 7)[:7]
+    target_habbo = norm(seller_habbo)
+    target_discord = norm(discord_seller)
+    new_amount = amount_to_credits(amount)
+
+    for index, row in enumerate(rows, start=2):
+        padded = list(row) + [""] * len(RANK_SELLER_TOTALS_HEADERS)
+        same_habbo = target_habbo and norm(padded[1]) == target_habbo
+        same_discord = target_discord and norm(padded[0]) == target_discord
+        if not same_habbo and not same_discord:
+            continue
+
+        try:
+            total_sales = int(float(clean_text(padded[2]) or "0")) + 1
+        except ValueError:
+            total_sales = 1
+
+        previous_amount = amount_to_credits(padded[3])
+        total_amount = None
+        if previous_amount is not None or new_amount is not None:
+            total_amount = (previous_amount or 0) + (new_amount or 0)
+
+        updated = [
+            clean_text(discord_seller) or padded[0] or "N/A",
+            clean_text(seller_habbo) or padded[1] or "N/A",
+            total_sales,
+            format_credits(total_amount),
+            clean_text(timestamp) or padded[4] or "N/A",
+            clean_text(rank_sold) or padded[5] or "N/A",
+        ]
+        totals_sheet.update(range_name=f"A{index}:F{index}", values=[updated], value_input_option="USER_ENTERED")
+        apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))
+        return
+
+    new_row = [
+        clean_text(discord_seller) or "N/A",
+        clean_text(seller_habbo) or "N/A",
+        1,
+        format_credits(new_amount),
+        clean_text(timestamp) or "N/A",
+        clean_text(rank_sold) or "N/A",
+    ]
+    totals_sheet.append_row(new_row, value_input_option="USER_ENTERED")
+    apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))
 
 
 def append_rank_sale_to_sheet(row: list[str]) -> None:
-    worksheet = get_rank_sales_worksheet()
-    values = worksheet.get_all_values()
+    spreadsheet = get_spreadsheet()
+    rank_sales = get_or_create_worksheet(spreadsheet, RANK_SALES_SHEET_NAME, RANK_SALES_HEADERS)
+    values = rank_sales.get_all_values()
     current_header = values[0][:len(RANK_SALES_HEADERS)] if values else []
     old_header = [cell.strip().casefold() for cell in values[0]] if values else []
 
     if current_header != RANK_SALES_HEADERS or "seller id" in old_header or "channel id" in old_header or "channel" in old_header:
         setup_rank_sales_sheet_layout()
-        worksheet = get_rank_sales_worksheet()
-    elif not values:
-        worksheet.update(range_name="A1", values=[RANK_SALES_HEADERS], value_input_option="USER_ENTERED")
-        apply_rank_sales_sheet_style(worksheet)
+        spreadsheet = get_spreadsheet()
+        rank_sales = get_or_create_worksheet(spreadsheet, RANK_SALES_SHEET_NAME, RANK_SALES_HEADERS)
 
-    worksheet.append_row(row, value_input_option="USER_ENTERED")
-    apply_rank_sales_sheet_style(worksheet)
+    rank_sales.append_row(row, value_input_option="USER_ENTERED")
+    update_rank_seller_totals_for_sale(spreadsheet, row)
+    apply_sales_sheet_style(rank_sales, len(RANK_SALES_HEADERS))
 
 
 async def get_rank_sales_channel(guild: discord.Guild | None):
     if guild is None or not RANK_SALES_CHANNEL_ID:
         return None
-
     try:
         channel_id = int(RANK_SALES_CHANNEL_ID)
     except ValueError:
         return None
-
     channel = guild.get_channel(channel_id) or bot.get_channel(channel_id)
     if channel is None:
         try:
             channel = await bot.fetch_channel(channel_id)
         except discord.DiscordException:
             return None
-
     if isinstance(channel, (discord.TextChannel, discord.Thread)):
         return channel
-
     return None
 
 
@@ -478,19 +579,15 @@ async def member_can_log_sales(interaction: discord.Interaction) -> bool:
         return True
     if interaction.guild is None:
         return False
-
     try:
         sales_role_id = int(SALES_ROLE_ID)
     except ValueError:
         return False
-
     member = interaction.user
     if not isinstance(member, discord.Member):
         member = await interaction.guild.fetch_member(interaction.user.id)
-
     if member.guild_permissions.administrator:
         return True
-
     return any(role.id == sales_role_id for role in member.roles)
 
 
@@ -498,7 +595,6 @@ async def update_stats(guild: discord.Guild) -> None:
     staff_ids = set()
     for role in staff_roles(guild):
         staff_ids.update(member.id for member in role.members)
-
     names = {
         "server members:": f"Server Members: {guild.member_count or 0}",
         "staff members:": f"Staff Members: {len(staff_ids)}",
@@ -552,18 +648,15 @@ async def sale_log(interaction: discord.Interaction) -> None:
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
-
     if not await member_can_log_sales(interaction):
         await interaction.response.send_message("You do not have permission to log rank sales.", ephemeral=True)
         return
-
     if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
         await interaction.response.send_message(
             "Rank sales logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.",
             ephemeral=True,
         )
         return
-
     await interaction.response.send_modal(RankSaleModal())
 
 
@@ -571,35 +664,32 @@ async def sale_log(interaction: discord.Interaction) -> None:
 async def sale_summary(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        credentials_info = json.loads(GOOGLE_CREDENTIALS_JSON)
-        credentials = Credentials.from_service_account_info(credentials_info, scopes=GOOGLE_SCOPES)
-        sheets_client = gspread.authorize(credentials)
-        spreadsheet = sheets_client.open_by_key(SPREADSHEET_ID)
-        worksheet = spreadsheet.worksheet("Rank Seller Totals")
+        worksheet = get_rank_seller_totals_worksheet()
         values = await asyncio.to_thread(worksheet.get_all_values)
         rows = values[1:] if len(values) > 1 else []
-
         if not rows:
             await interaction.followup.send("No rank seller totals have been synced yet.", ephemeral=True)
             return
 
-        lines = []
-        rank_number = 1
+        parsed_rows = []
         for row in rows:
-            padded = list(row) + [""] * 6
+            padded = list(row) + [""] * len(RANK_SELLER_TOTALS_HEADERS)
             discord_username = padded[0].strip()
             sales_count = padded[2].strip() or "0"
-            total_amount = padded[3].strip() or "0c"
-
+            total_amount = padded[3].strip() or "N/A"
             if not discord_username:
                 continue
-            if total_amount and total_amount[-1].isdigit():
-                total_amount = f"{total_amount}c"
+            try:
+                sort_sales = int(float(sales_count))
+            except ValueError:
+                sort_sales = 0
+            parsed_rows.append((sort_sales, discord_username, sales_count, total_amount))
+
+        parsed_rows.sort(key=lambda item: item[0], reverse=True)
+        lines = []
+        for rank_number, (_sort_sales, discord_username, sales_count, total_amount) in enumerate(parsed_rows[:10], start=1):
             sale_word = "sale" if str(sales_count).strip() == "1" else "sales"
             lines.append(f"{rank_number}.  **{discord_username}**\n— {sales_count} {sale_word} — {total_amount} total")
-            rank_number += 1
-            if rank_number > 10:
-                break
 
         if not lines:
             await interaction.followup.send("No Discord usernames found in Rank Seller Totals.", ephemeral=True)
@@ -621,14 +711,14 @@ async def sale_summary(interaction: discord.Interaction) -> None:
 bot.tree.add_command(sale_group)
 
 
-@bot.tree.command(name="setup-rank-sales-sheet", description="Clean and style the rank sales Google Sheet.")
+@bot.tree.command(name="setup-rank-sales-sheet", description="Clean, repair, and style the rank sales Google Sheet.")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_rank_sales_sheet(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         await asyncio.to_thread(setup_rank_sales_sheet_layout)
         await interaction.followup.send(
-            "Rank Sales sheet cleaned and styled. Columns are now: Timestamp, Discord Seller, Seller Habbo, Buyer, Rank Sold, Amount, Proof / Notes.",
+            "Rank Sales and Rank Seller Totals were cleaned, rebuilt, and styled. New totals now update existing Habbo usernames instead of adding duplicates.",
             ephemeral=True,
         )
     except Exception as exc:
@@ -650,20 +740,15 @@ async def build_server(interaction: discord.Interaction, template: app_commands.
     if guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
-
     try:
         await interaction.response.defer(ephemeral=True, thinking=True)
     except discord.NotFound:
         print("Build server interaction expired before it could be acknowledged. Run /build_server again.")
         return
+
     roles = AGENCY_ROLES if template.value == "agency" else SIMPLE_ROLES
     channels = AGENCY_CHANNELS if template.value == "agency" else SIMPLE_CHANNELS
-
-    created_roles = 0
-    created_categories = 0
-    created_text = 0
-    created_voice = 0
-    updated = 0
+    created_roles = created_categories = created_text = created_voice = updated = 0
 
     try:
         for role_name in reversed(roles):
@@ -678,9 +763,7 @@ async def build_server(interaction: discord.Interaction, template: app_commands.
                 if category_overwrites is None:
                     category = await guild.create_category(name=category_name, reason="Created by server builder")
                 else:
-                    category = await guild.create_category(
-                        name=category_name, overwrites=category_overwrites, reason="Created by server builder"
-                    )
+                    category = await guild.create_category(name=category_name, overwrites=category_overwrites, reason="Created by server builder")
                 created_categories += 1
             elif not keep_existing and category_overwrites is not None:
                 await category.edit(overwrites=category_overwrites, reason="Updated by server builder")
@@ -691,20 +774,10 @@ async def build_server(interaction: discord.Interaction, template: app_commands.
                     continue
                 channel_overwrites = get_overwrites(guild, category_name, channel_name, channel_type)
                 if channel_type == "voice":
-                    if channel_overwrites is None:
-                        await guild.create_voice_channel(name=channel_name, category=category, reason="Created by server builder")
-                    else:
-                        await guild.create_voice_channel(
-                            name=channel_name, category=category, overwrites=channel_overwrites, reason="Created by server builder"
-                        )
+                    await guild.create_voice_channel(name=channel_name, category=category, overwrites=channel_overwrites, reason="Created by server builder")
                     created_voice += 1
                 else:
-                    if channel_overwrites is None:
-                        await guild.create_text_channel(name=channel_name, category=category, reason="Created by server builder")
-                    else:
-                        await guild.create_text_channel(
-                            name=channel_name, category=category, overwrites=channel_overwrites, reason="Created by server builder"
-                        )
+                    await guild.create_text_channel(name=channel_name, category=category, overwrites=channel_overwrites, reason="Created by server builder")
                     created_text += 1
 
         await update_stats(guild)
@@ -728,16 +801,12 @@ async def setup_hierarchy(interaction: discord.Interaction) -> None:
     if guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
-
     await interaction.response.defer(ephemeral=True, thinking=True)
-
     if guild.me is None:
         await interaction.followup.send("I could not find my bot member in this server.", ephemeral=True)
         return
 
-    created = 0
-    updated = 0
-    moved = 0
+    created = updated = moved = 0
     failed = []
     managed_roles: list[discord.Role] = []
 
@@ -745,11 +814,7 @@ async def setup_hierarchy(interaction: discord.Interaction) -> None:
         for role_name, permissions in HIERARCHY_ROLES:
             role = discord.utils.get(guild.roles, name=role_name)
             if role is None:
-                role = await guild.create_role(
-                    name=role_name,
-                    permissions=permissions,
-                    reason="Created by hierarchy setup command",
-                )
+                role = await guild.create_role(name=role_name, permissions=permissions, reason="Created by hierarchy setup command")
                 created += 1
             else:
                 await role.edit(permissions=permissions, reason="Updated by hierarchy setup command")
@@ -809,14 +874,13 @@ async def delete_old_layout(interaction: discord.Interaction, confirm: str, incl
     if confirm != "DELETE":
         await interaction.response.send_message("Type DELETE in the confirm field to run cleanup.", ephemeral=True)
         return
-
     await interaction.response.defer(ephemeral=True, thinking=True)
+
     names_to_remove = set(OLD_LAYOUT_CATEGORIES)
     if include_start_here:
         names_to_remove.add("START HERE")
+    removed_channels = removed_categories = 0
 
-    removed_channels = 0
-    removed_categories = 0
     try:
         for category in list(guild.categories):
             if category.name not in names_to_remove:
@@ -826,15 +890,12 @@ async def delete_old_layout(interaction: discord.Interaction, confirm: str, incl
                 removed_channels += 1
             await category.delete(reason="Removed old layout")
             removed_categories += 1
-
         await interaction.followup.send(
             f"Old layout cleanup done. Removed categories: {removed_categories}, removed channels: {removed_channels}.",
             ephemeral=True,
         )
     except discord.Forbidden:
-        await interaction.followup.send(
-            "I need Manage Channels permission to remove the old layout.", ephemeral=True
-        )
+        await interaction.followup.send("I need Manage Channels permission to remove the old layout.", ephemeral=True)
     except Exception as exc:
         await interaction.followup.send(f"Cleanup error: {type(exc).__name__}: {exc}", ephemeral=True)
         raise
