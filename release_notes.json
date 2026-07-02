@@ -1,0 +1,13 @@
+{
+  "title": "Better Update Logs",
+  "summary": "Update logs now show only what was added or changed in the latest update.",
+  "added": [
+    "Release notes file for clean update-log messages",
+    "Added section that explains exactly what was added in the update"
+  ],
+  "changed": [
+    "Deployment logs will stop showing every active command by default",
+    "Update logs will focus on the current update only"
+  ],
+  "commands_added": []
+}
