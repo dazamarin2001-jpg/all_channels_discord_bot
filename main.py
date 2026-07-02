@@ -12,8 +12,8 @@ def replace_function(text: str, name: str, replacement: str) -> str:
     return text[:start] + replacement.rstrip() + text[next_start:]
 
 
-def upsert_event(text: str, event_signature: str, replacement: str) -> str:
-    start = text.find(event_signature)
+def upsert_event(text: str, signature: str, replacement: str) -> str:
+    start = text.find(signature)
     if start == -1:
         marker = '@bot.tree.command(description="Check whether the bot is responding.")\n'
         return text.replace(marker, replacement.rstrip() + "\n\n" + marker, 1)
@@ -26,24 +26,26 @@ def upsert_event(text: str, event_signature: str, replacement: str) -> str:
     return text[:start] + replacement.rstrip() + text[end:]
 
 
+def remove_generated_block(text: str, start_marker: str, end_marker: str = "bot.tree.add_command(sale_group)") -> str:
+    while start_marker in text:
+        start = text.find(start_marker)
+        end = text.find(end_marker, start)
+        if end == -1:
+            break
+        text = text[:start] + text[end:]
+    return text
+
+
 path = Path("bot.py")
 if path.exists():
     text = path.read_text()
 
-    # Remove any old generated donation/cleanup blocks so a bad runtime patch cannot keep duplicating code.
-    text = re.sub(
-        r'\n\nDONATIONS_SHEET_NAME = os\.getenv\("DONATIONS_SHEET_NAME"[\s\S]*?\n\nbot\.tree\.add_command\(sale_group\)',
-        '\n\nbot.tree.add_command(sale_group)',
-        text,
-        count=1,
-    )
-    text = re.sub(
-        r'\n\nCLEANUP_CHANNELS_(?:FILE|SHEET_NAME)[\s\S]*?\n\nbot\.tree\.add_command\(sale_group\)',
-        '\n\nbot.tree.add_command(sale_group)',
-        text,
-        count=1,
-    )
+    # Clean old generated blocks from earlier failed restarts.
+    text = remove_generated_block(text, "DONATIONS_SHEET_NAME")
+    text = remove_generated_block(text, "CLEANUP_CHANNELS_FILE")
+    text = remove_generated_block(text, "CLEANUP_CHANNELS_SHEET_NAME")
     text = text.replace("\nbot.tree.add_command(cleanup_group)\n", "\n")
+    text = text.replace("@app_commands.check(can_setup_rank_sales_sheet)", "@app_commands.checks.has_permissions(administrator=True)")
 
     # Remove timestamp columns from sales sheets.
     text = re.sub(
@@ -76,8 +78,7 @@ GOOGLE_SCOPES''',
         count=1,
     )
 
-    # Helpers to merge similar names like "Missbluegerlx2 | Eshly" and "Missbluegerlx2".
-    seller_helpers = '''def seller_identity_display(value: object) -> str:
+    helpers = '''def seller_identity_display(value: object) -> str:
     text = clean_text(value)
     if not text or text.casefold() == "n/a":
         return ""
@@ -94,9 +95,9 @@ def seller_identity_key(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "", display)
 '''
     if "def seller_identity_display(" not in text:
-        text = text.replace("\n\ndef amount_to_credits", "\n\n" + seller_helpers + "\ndef amount_to_credits", 1)
+        text = text.replace("\n\ndef amount_to_credits", "\n\n" + helpers + "\ndef amount_to_credits", 1)
 
-    # Sale modal: remove Seller Habbo field and use the server display name automatically.
+    # Sale modal: remove Seller Habbo field and use server display name automatically.
     text = text.replace('''    seller_habbo = discord.ui.TextInput(
         label="Seller Habbo Username",
         placeholder="Example: Dazamarin",
@@ -105,14 +106,14 @@ def seller_identity_key(value: object) -> str:
     )
 ''', "", 1)
 
-    new_sale_values = '''            buyer = clean_text(self.children[0].value)
+    new_submit = '''            buyer = clean_text(self.children[0].value)
             rank = clean_text(self.children[1].value)
             amount = clean_text(self.children[2].value)
             proof = clean_text(self.children[3].value) or "N/A"
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
             seller_habbo = discord_seller
 '''
-    sale_value_patterns = [
+    submit_patterns = [
         '''            seller_habbo = clean_text(self.children[0].value)
 buyer = clean_text(self.children[1].value)
 rank = clean_text(self.children[2].value)
@@ -146,9 +147,9 @@ proof = clean_text(self.children[4].value) or "N/A"
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
 ''',
     ]
-    for pattern in sale_value_patterns:
+    for pattern in submit_patterns:
         if pattern in text:
-            text = text.replace(pattern, new_sale_values, 1)
+            text = text.replace(pattern, new_submit, 1)
             break
     text = text.replace("row = [timestamp, discord_seller, seller_habbo, buyer, rank, amount, proof]", "row = [discord_seller, seller_habbo, buyer, rank, amount, proof]", 1)
     text = text.replace('            embed.add_field(name="Seller Habbo", value=seller_habbo, inline=True)', '            embed.add_field(name="Server Username", value=discord_seller, inline=True)', 1)
@@ -245,7 +246,6 @@ proof = clean_text(self.children[4].value) or "N/A"
 
     text = text.replace('rank_sales.batch_clear(["H:Z"])', 'rank_sales.batch_clear(["G:Z"])')
 
-    # Add donation logging commands.
     donation_block = '''DONATIONS_SHEET_NAME = os.getenv("DONATIONS_SHEET_NAME", "Donations")
 DONATION_CHANNEL_ID = os.getenv("DONATION_CHANNEL_ID") or os.getenv("DONATIONS_CHANNEL_ID")
 DONATIONS_HEADERS = ["Logged By", "Donor Habbo", "Amount", "Proof / Notes"]
@@ -352,7 +352,7 @@ async def donate(interaction: discord.Interaction) -> None:
 
 
 @bot.tree.command(name="setup-donations-sheet", description="Create, clean, and style the Donations Google Sheet tab.")
-@app_commands.check(can_setup_rank_sales_sheet)
+@app_commands.checks.has_permissions(administrator=True)
 async def setup_donations_sheet(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
@@ -367,7 +367,6 @@ async def setup_donations_sheet(interaction: discord.Interaction) -> None:
     if "DONATIONS_SHEET_NAME" not in text:
         text = text.replace("bot.tree.add_command(sale_group)\n", donation_block + "bot.tree.add_command(sale_group)\n", 1)
 
-    # Add cleanup commands. No Google Sheet. Command-enabled channels are saved to a small local JSON file.
     cleanup_block = '''CLEANUP_CHANNELS_FILE = os.getenv("CLEANUP_CHANNELS_FILE", "cleanup_channels.json")
 EXTRA_CLEANUP_CHANNEL_IDS: set[int] = set()
 
@@ -603,6 +602,6 @@ async def clean_existing_cleanup_channel_messages() -> None:
     print("Timestamps removed from Rank Sales and Rank Seller Totals.")
     print("Similar seller names are merged before totals are built.")
     print("Donation logging command and Donations sheet tab enabled.")
-    print("Cleanup crew commands fixed: no Google Sheet storage, 10-second warning.")
+    print("Cleanup crew commands fixed and startup crash fixed.")
 
 import bot
