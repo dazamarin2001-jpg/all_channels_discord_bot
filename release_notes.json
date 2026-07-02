@@ -1,14 +1,13 @@
 {
-  "title": "Better Update Logs",
-  "summary": "The update-log channel now shows a clear changelog for the latest update only, instead of listing every active command on the bot.",
+  "title": "Role Ping by Message",
+  "summary": "MADBOT can now ping a Discord role when an approved staff member asks it to, without needing a slash command.",
   "added": [
-    "A short description of what the update does",
-    "A dedicated Added section for new features",
-    "A Commands Added section that explains what each new command is for"
+    "Approved users can mention MADBOT and ask it to ping a role",
+    "Role pings are restricted so regular members cannot abuse them",
+    "Chat Moderator and admins can use the role ping feature"
   ],
   "changed": [
-    "Deployment logs will stop showing every active command by default",
-    "Update logs will focus on the current update only"
+    "Update logs now describe the actual feature added in this update"
   ],
   "commands_added": []
 }
