@@ -570,45 +570,45 @@ async def sale_log(interaction: discord.Interaction) -> None:
 @sale_group.command(name="summary", description="Show the top rank sellers based on logged sales.")
 async def sale_summary(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
-
-    if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
-        await interaction.followup.send(
-            "Rank sales logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.",
-            ephemeral=True,
-        )
-        return
-
     try:
-        worksheet = await asyncio.to_thread(get_rank_sales_worksheet)
+        credentials_info = json.loads(GOOGLE_CREDENTIALS_JSON)
+        credentials = Credentials.from_service_account_info(credentials_info, scopes=GOOGLE_SCOPES)
+        sheets_client = gspread.authorize(credentials)
+        spreadsheet = sheets_client.open_by_key(SPREADSHEET_ID)
+        worksheet = spreadsheet.worksheet("Rank Seller Totals")
         values = await asyncio.to_thread(worksheet.get_all_values)
         rows = values[1:] if len(values) > 1 else []
 
         if not rows:
-            await interaction.followup.send("No rank sales have been logged yet.", ephemeral=True)
+            await interaction.followup.send("No rank seller totals have been synced yet.", ephemeral=True)
             return
 
-        seller_totals = {}
-        for row in rows:
-            seller = row[2].strip() if len(row) > 2 and row[2].strip() else "Unknown"
-            seller_totals[seller] = seller_totals.get(seller, 0) + 1
-
-        top_sellers = sorted(seller_totals.items(), key=lambda item: item[1], reverse=True)[:10]
-        leaderboard = "\n".join(
-            f"{index}. {seller}: {count} sale{'s' if count != 1 else ''}"
-            for index, (seller, count) in enumerate(top_sellers, start=1)
-        )
+        lines = []
+        for index, row in enumerate(rows[:10], start=1):
+            padded = list(row) + ["", "", ""]
+            seller = padded[0].strip()
+            sales = padded[1].strip() or "0"
+            total = padded[2].strip() or "0"
+            if not seller:
+                continue
+            if "sale" not in sales.casefold():
+                sales = f"{sales} sales"
+            if total and total[-1].isdigit():
+                total = f"{total}c"
+            lines.append(f"{index}.  **{seller}**\n— {sales} — {total} total")
 
         embed = discord.Embed(
             title="Rank Seller Totals",
-            description=leaderboard,
-            color=discord.Color.green(),
+            description="\n".join(lines),
+            color=discord.Color.purple(),
             timestamp=datetime.now(ZoneInfo(TIMEZONE)),
         )
-        embed.add_field(name="Total Sales Logged", value=str(len(rows)), inline=False)
+        embed.set_footer(text="Synced from the Rank Seller Totals sheet")
         await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as exc:
         print(f"Rank sales summary error: {type(exc).__name__}: {exc}")
         await interaction.followup.send(f"Could not load sales summary: {type(exc).__name__}: {exc}", ephemeral=True)
+
 
 
 bot.tree.add_command(sale_group)
