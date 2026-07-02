@@ -56,10 +56,15 @@ async def post_rank_sale_update_log_once() -> None:
         return
 
     embed = discord.Embed(
-        title="MADBOT Update — Rank Sales Update",
-        description="The rank sales update is live on the latest deployment.",
+        title="MADBOT Update Log Test",
+        description="This is an automatic test post for the configured update-log channel.",
         color=discord.Color.blurple(),
         timestamp=datetime.now(ZoneInfo(TIMEZONE)),
+    )
+    embed.add_field(
+        name="Status",
+        value="Update-log channel test is working if you can see this message.",
+        inline=False,
     )
     embed.add_field(
         name="Commands Added",
@@ -70,23 +75,18 @@ async def post_rank_sale_update_log_once() -> None:
         inline=False,
     )
     embed.add_field(
-        name="Added",
+        name="Rank Sale Summary",
         value="• Rank sale Discord form\n• Google Sheets logging\n• Rank-sales channel log",
         inline=False,
     )
-    embed.add_field(
-        name="Changed / Fixed",
-        value="• Rank sale logging now runs on the latest deployment\n• Update-log notification posts automatically on startup",
-        inline=False,
-    )
-    embed.set_footer(text="MADBOT automatic deployment log")
+    embed.set_footer(text="MADBOT automatic update-log test")
 
     try:
         message = await channel.send(
-            content="Rank Sale Update Pushed — /rank-sale is live and running on the latest deployment.",
+            content="Update Log Test — the configured update-log channel is working.",
             embed=embed,
         )
-        print(f"Automatic update-log notification posted to {channel.id}: {message.jump_url}")
+        print(f"Automatic update-log test posted to {channel.id}: {message.jump_url}")
     except discord.Forbidden as exc:
         print(f"Bot cannot send to UPDATE_LOG_CHANNEL_ID={channel_id}: {type(exc).__name__}: {exc}")
     except discord.DiscordException as exc:
@@ -104,24 +104,26 @@ if "await post_rank_sale_update_log_once()" not in s:
 
 # Refresh older already-patched bot.py deployments with the latest automatic update-log wording.
 rep(
-    '''    embed.add_field(
-        name="Added",
-        value="• /rank-sale Discord form\n• Google Sheets logging\n• Rank-sales channel log",
-        inline=False,
+    '''    embed = discord.Embed(
+        title="MADBOT Update — Rank Sales Update",
+        description="The rank sales update is live on the latest deployment.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(ZoneInfo(TIMEZONE)),
     )''',
-    '''    embed.add_field(
-        name="Commands Added",
-        value=(
-            "• `/rank-sale` — opens a Discord form to log a rank sale into Google Sheets.\n"
-            "• `/setup-rank-sales-sheet` — cleans and styles the Rank Sales sheet layout."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Added",
-        value="• Rank sale Discord form\n• Google Sheets logging\n• Rank-sales channel log",
-        inline=False,
+    '''    embed = discord.Embed(
+        title="MADBOT Update Log Test",
+        description="This is an automatic test post for the configured update-log channel.",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(ZoneInfo(TIMEZONE)),
     )'''
+)
+rep(
+    'content="Rank Sale Update Pushed — /rank-sale is live and running on the latest deployment."',
+    'content="Update Log Test — the configured update-log channel is working."'
+)
+rep(
+    'print(f"Automatic update-log notification posted to {channel.id}: {message.jump_url}")',
+    'print(f"Automatic update-log test posted to {channel.id}: {message.jump_url}")'
 )
 
 p.write_text(s, encoding="utf-8")
