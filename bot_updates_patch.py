@@ -62,8 +62,16 @@ async def post_rank_sale_update_log_once() -> None:
         timestamp=datetime.now(ZoneInfo(TIMEZONE)),
     )
     embed.add_field(
+        name="Commands Added",
+        value=(
+            "• `/rank-sale` — opens a Discord form to log a rank sale into Google Sheets.\n"
+            "• `/setup-rank-sales-sheet` — cleans and styles the Rank Sales sheet layout."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="Added",
-        value="• /rank-sale Discord form\n• Google Sheets logging\n• Rank-sales channel log",
+        value="• Rank sale Discord form\n• Google Sheets logging\n• Rank-sales channel log",
         inline=False,
     )
     embed.add_field(
@@ -93,6 +101,28 @@ if "await post_rank_sale_update_log_once()" not in s:
         '    if not stat_loop.is_running():\n        stat_loop.start()',
         '    if not stat_loop.is_running():\n        stat_loop.start()\n    await post_rank_sale_update_log_once()',
     )
+
+# Refresh older already-patched bot.py deployments with the latest automatic update-log wording.
+rep(
+    '''    embed.add_field(
+        name="Added",
+        value="• /rank-sale Discord form\n• Google Sheets logging\n• Rank-sales channel log",
+        inline=False,
+    )''',
+    '''    embed.add_field(
+        name="Commands Added",
+        value=(
+            "• `/rank-sale` — opens a Discord form to log a rank sale into Google Sheets.\n"
+            "• `/setup-rank-sales-sheet` — cleans and styles the Rank Sales sheet layout."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Added",
+        value="• Rank sale Discord form\n• Google Sheets logging\n• Rank-sales channel log",
+        inline=False,
+    )'''
+)
 
 p.write_text(s, encoding="utf-8")
 print("Bot updates patch applied.")
