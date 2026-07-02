@@ -248,7 +248,7 @@ class RankSaleModal(discord.ui.Modal, title="Log Rank Sale"):
             amount = clean_text(self.amount.value)
             proof = clean_text(self.proof.value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
-            discord_seller = getattr(interaction.user, "display_name", interaction.user.name)
+            discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
 
             row = [timestamp, discord_seller, seller_habbo, buyer, rank, amount, proof]
             await asyncio.to_thread(append_rank_sale_to_sheet, row)
