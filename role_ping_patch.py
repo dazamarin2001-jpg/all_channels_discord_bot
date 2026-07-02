@@ -14,7 +14,17 @@ def can_use_role_ping(member) -> bool:
 
 
 def norm(value):
-    return " ".join(str(value or "").casefold().replace("@", "").replace("-", " ").replace("_", " ").split())
+    text = str(value or "").casefold().replace("@", " ")
+    cleaned = []
+    last_space = True
+    for ch in text:
+        if ch.isalnum():
+            cleaned.append(ch)
+            last_space = False
+        elif not last_space:
+            cleaned.append(" ")
+            last_space = True
+    return " ".join("".join(cleaned).split())
 
 
 def find_role_for_ping(message, text):
@@ -26,12 +36,30 @@ def find_role_for_ping(message, text):
     checks = [wanted]
     if wanted.endswith("s"):
         checks.append(wanted[:-1])
+    best = None
+    best_len = 0
     for role in getattr(message.guild, "roles", []):
         role_name = norm(role.name)
+        if not role_name:
+            continue
         for check in checks:
             if check == role_name or check.startswith(role_name + " "):
-                return role
-    return None
+                if len(role_name) > best_len:
+                    best = role
+                    best_len = len(role_name)
+    return best
+
+
+def role_ping_note(text, role, has_role_mention):
+    words = text.split()
+    if words and words[0].casefold() == "ping":
+        words = words[1:]
+    if not words:
+        return ""
+    if has_role_mention or words[0].startswith("<@&") or words[0].startswith("@"):
+        return " ".join(words[1:]).strip()
+    role_word_count = max(1, len(norm(role.name).split()))
+    return " ".join(words[role_word_count:]).strip()
 
 
 async def try_role_ping_message(message) -> bool:
@@ -47,8 +75,8 @@ async def try_role_ping_message(message) -> bool:
     if role is None:
         await message.reply("I could not find that server role. Try `@MADBOT ping @RoleName message`.", mention_author=False)
         return True
-    note = text.split(" ", 2)[2].strip() if len(text.split(" ", 2)) >= 3 else ""
-    await message.channel.send(f"{role.mention} {note}".strip())
+    note = role_ping_note(text, role, bool(message.role_mentions))
+    await message.channel.send(f"{role.mention} {note}".strip(), allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False))
     return True
 '''
 
