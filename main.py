@@ -2,7 +2,7 @@ from pathlib import Path
 import re
 
 
-def replace_top_function(text: str, name: str, replacement: str) -> str:
+def replace_function(text: str, name: str, replacement: str) -> str:
     start = text.find(f"def {name}(")
     if start == -1:
         return text
@@ -17,7 +17,6 @@ def upsert_on_message_event(text: str, replacement: str) -> str:
     if start == -1:
         marker = '@bot.tree.command(description="Check whether the bot is responding.")\n'
         return text.replace(marker, replacement.rstrip() + "\n\n" + marker, 1)
-
     next_command = text.find("\n\n@bot.tree.command", start + 1)
     next_event = text.find("\n\n@bot.event", start + 1)
     candidates = [pos for pos in (next_command, next_event) if pos != -1]
@@ -29,7 +28,6 @@ path = Path("bot.py")
 if path.exists():
     text = path.read_text()
 
-    # Remove timestamp columns from both sheet layouts.
     text = re.sub(
         r'RANK_SALES_HEADERS = \[[\s\S]*?\]\n\nRANK_SELLER_TOTALS_HEADERS',
         '''RANK_SALES_HEADERS = [
@@ -60,8 +58,7 @@ GOOGLE_SCOPES''',
         count=1,
     )
 
-    # Add helpers to merge similar seller names like "Missbluegerlx2 | Eshly" and "Missbluegerlx2".
-    seller_identity_helpers = '''def seller_identity_display(value: object) -> str:
+    helpers = '''def seller_identity_display(value: object) -> str:
     text = clean_text(value)
     if not text or text.casefold() == "n/a":
         return ""
@@ -78,24 +75,8 @@ def seller_identity_key(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "", display)
 '''
     if "def seller_identity_display(" not in text:
-        text = text.replace("\n\ndef amount_to_credits", "\n\n" + seller_identity_helpers + "\ndef amount_to_credits", 1)
+        text = text.replace("\n\ndef amount_to_credits", "\n\n" + helpers + "\ndef amount_to_credits", 1)
 
-    # Fix the bad indentation from the previous modal edit if it exists.
-    broken = '''            seller_habbo = clean_text(self.children[0].value)
-buyer = clean_text(self.children[1].value)
-rank = clean_text(self.children[2].value)
-amount = clean_text(self.children[3].value)
-proof = clean_text(self.children[4].value) or "N/A"
-            timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")'''
-    fixed = '''            seller_habbo = clean_text(self.children[0].value)
-            buyer = clean_text(self.children[1].value)
-            rank = clean_text(self.children[2].value)
-            amount = clean_text(self.children[3].value)
-            proof = clean_text(self.children[4].value) or "N/A"
-            timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")'''
-    text = text.replace(broken, fixed, 1)
-
-    # Remove the Seller Habbo Username field from the Discord modal.
     seller_field = '''    seller_habbo = discord.ui.TextInput(
         label="Seller Habbo Username",
         placeholder="Example: Dazamarin",
@@ -105,57 +86,54 @@ proof = clean_text(self.children[4].value) or "N/A"
 '''
     text = text.replace(seller_field, "", 1)
 
-    # Use the server Discord nickname/display name automatically as the seller name.
-    new_children_block = '''            buyer = clean_text(self.children[0].value)
-            rank = clean_text(self.children[1].value)
-            amount = clean_text(self.children[2].value)
-            proof = clean_text(self.children[3].value) or "N/A"
+    broken_submit = '''            seller_habbo = clean_text(self.children[0].value)
+buyer = clean_text(self.children[1].value)
+rank = clean_text(self.children[2].value)
+amount = clean_text(self.children[3].value)
+proof = clean_text(self.children[4].value) or "N/A"
+            timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
-            seller_habbo = discord_seller
 '''
-    modal_variants = [
-        '''            seller_habbo = clean_text(self.children[0].value)
+    old_submit = '''            seller_habbo = clean_text(self.children[0].value)
             buyer = clean_text(self.children[1].value)
             rank = clean_text(self.children[2].value)
             amount = clean_text(self.children[3].value)
             proof = clean_text(self.children[4].value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
-''',
-        '''            buyer = clean_text(self.children[0].value)
+'''
+    already_submit = '''            buyer = clean_text(self.children[0].value)
             rank = clean_text(self.children[1].value)
             amount = clean_text(self.children[2].value)
             proof = clean_text(self.children[3].value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
             seller_habbo = discord_seller
-''',
-        '''            seller_habbo = clean_text(self.seller_habbo.value)
+'''
+    named_submit = '''            seller_habbo = clean_text(self.seller_habbo.value)
             buyer = clean_text(self.buyer.value)
             rank = clean_text(self.rank.value)
             amount = clean_text(self.amount.value)
             proof = clean_text(self.proof.value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
             discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
-''',
-    ]
-    for old_block in modal_variants:
-        if old_block in text:
-            text = text.replace(old_block, new_children_block, 1)
+'''
+    new_submit = '''            buyer = clean_text(self.children[0].value)
+            rank = clean_text(self.children[1].value)
+            amount = clean_text(self.children[2].value)
+            proof = clean_text(self.children[3].value) or "N/A"
+            discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
+            seller_habbo = discord_seller
+'''
+    for old in (broken_submit, old_submit, already_submit, named_submit):
+        if old in text:
+            text = text.replace(old, new_submit, 1)
             break
 
-    text = text.replace(
-        "row = [timestamp, discord_seller, seller_habbo, buyer, rank, amount, proof]",
-        "row = [discord_seller, seller_habbo, buyer, rank, amount, proof]",
-        1,
-    )
-    text = text.replace(
-        '            embed.add_field(name="Seller Habbo", value=seller_habbo, inline=True)',
-        '            embed.add_field(name="Server Username", value=discord_seller, inline=True)',
-        1,
-    )
+    text = text.replace("row = [timestamp, discord_seller, seller_habbo, buyer, rank, amount, proof]", "row = [discord_seller, seller_habbo, buyer, rank, amount, proof]", 1)
+    text = text.replace('            embed.add_field(name="Seller Habbo", value=seller_habbo, inline=True)', '            embed.add_field(name="Server Username", value=discord_seller, inline=True)', 1)
 
-    text = replace_top_function(text, "clean_rank_sales_rows", '''def clean_rank_sales_rows(values: list[list[str]]) -> list[list[str]]:
+    text = replace_function(text, "clean_rank_sales_rows", '''def clean_rank_sales_rows(values: list[list[str]]) -> list[list[str]]:
     cleaned = [RANK_SALES_HEADERS]
     if not values:
         return cleaned
@@ -169,7 +147,6 @@ proof = clean_text(self.children[4].value) or "N/A"
         if not any(str(cell).strip() for cell in row):
             continue
         padded = list(row) + [""] * 12
-
         if looks_like_totals:
             continue
         if has_old_private_columns:
@@ -181,7 +158,7 @@ proof = clean_text(self.children[4].value) or "N/A"
     return cleaned
 ''')
 
-    text = replace_top_function(text, "aggregate_rank_sales", '''def aggregate_rank_sales(rows: list[list[str]]) -> dict[str, list[object]]:
+    text = replace_function(text, "aggregate_rank_sales", '''def aggregate_rank_sales(rows: list[list[str]]) -> dict[str, list[object]]:
     totals: dict[str, list[object]] = {}
     for row in rows:
         padded = list(row) + [""] * len(RANK_SALES_HEADERS)
@@ -192,7 +169,6 @@ proof = clean_text(self.children[4].value) or "N/A"
         key = seller_identity_key(seller_habbo) or seller_identity_key(discord_seller)
         if not key:
             continue
-
         amount_value = amount_to_credits(amount)
         if key not in totals:
             totals[key] = [seller_display or "N/A", seller_display or "N/A", 0, 0.0, rank_sold or "N/A", False]
@@ -208,30 +184,22 @@ proof = clean_text(self.children[4].value) or "N/A"
     return totals
 ''')
 
-    text = replace_top_function(text, "write_rank_seller_totals", '''def write_rank_seller_totals(spreadsheet, raw_rows: list[list[str]]) -> None:
+    text = replace_function(text, "write_rank_seller_totals", '''def write_rank_seller_totals(spreadsheet, raw_rows: list[list[str]]) -> None:
     totals_sheet = get_rank_seller_totals_worksheet(spreadsheet)
     totals = aggregate_rank_sales(raw_rows)
     output = [RANK_SELLER_TOTALS_HEADERS]
     for record in totals.values():
         has_amount = bool(record[5])
-        output.append([
-            record[0],
-            record[1],
-            record[2],
-            format_credits(float(record[3]) if has_amount else None),
-            record[4],
-        ])
-
+        output.append([record[0], record[1], record[2], format_credits(float(record[3]) if has_amount else None), record[4]])
     totals_sheet.clear()
     totals_sheet.update(range_name="A1", values=output, value_input_option="USER_ENTERED")
     apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))
 ''')
 
-    text = replace_top_function(text, "update_rank_seller_totals_for_sale", '''def update_rank_seller_totals_for_sale(spreadsheet, sale_row: list[str]) -> None:
+    text = replace_function(text, "update_rank_seller_totals_for_sale", '''def update_rank_seller_totals_for_sale(spreadsheet, sale_row: list[str]) -> None:
     totals_sheet = get_rank_seller_totals_worksheet(spreadsheet)
     values = totals_sheet.get_all_values()
     rows = values[1:] if len(values) > 1 else []
-
     discord_seller, seller_habbo, _buyer, rank_sold, amount, _proof = (sale_row + [""] * 6)[:6]
     seller_display = seller_identity_display(seller_habbo) or seller_identity_display(discord_seller)
     target_habbo = seller_identity_key(seller_habbo)
@@ -244,41 +212,23 @@ proof = clean_text(self.children[4].value) or "N/A"
         same_discord = target_discord and seller_identity_key(padded[0]) == target_discord
         if not same_habbo and not same_discord:
             continue
-
         try:
             total_sales = int(float(clean_text(padded[2]) or "0")) + 1
         except ValueError:
             total_sales = 1
-
         previous_amount = amount_to_credits(padded[3])
-        total_amount = None
-        if previous_amount is not None or new_amount is not None:
-            total_amount = (previous_amount or 0) + (new_amount or 0)
-
-        updated = [
-            seller_display or padded[0] or padded[1] or "N/A",
-            seller_display or padded[1] or padded[0] or "N/A",
-            total_sales,
-            format_credits(total_amount),
-            clean_text(rank_sold) or padded[4] or "N/A",
-        ]
+        total_amount = (previous_amount or 0) + (new_amount or 0) if previous_amount is not None or new_amount is not None else None
+        updated = [seller_display or padded[0] or padded[1] or "N/A", seller_display or padded[1] or padded[0] or "N/A", total_sales, format_credits(total_amount), clean_text(rank_sold) or padded[4] or "N/A"]
         totals_sheet.update(range_name=f"A{index}:E{index}", values=[updated], value_input_option="USER_ENTERED")
         apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))
         return
 
-    new_row = [
-        seller_display or "N/A",
-        seller_display or "N/A",
-        1,
-        format_credits(new_amount),
-        clean_text(rank_sold) or "N/A",
-    ]
+    new_row = [seller_display or "N/A", seller_display or "N/A", 1, format_credits(new_amount), clean_text(rank_sold) or "N/A"]
     next_row = max(len(values) + 1, 2)
     totals_sheet.update(range_name=f"A{next_row}:E{next_row}", values=[new_row], value_input_option="USER_ENTERED")
     apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))
 ''')
 
-    # In /sale summary, show Habbo Username when Discord Username is blank or N/A.
     text = text.replace(
         '''            discord_username = padded[0].strip()
             sales_count = padded[2].strip() or "0"''',
@@ -289,10 +239,8 @@ proof = clean_text(self.children[4].value) or "N/A"
             sales_count = padded[2].strip() or "0"''',
         1,
     )
-
     text = text.replace('rank_sales.batch_clear(["H:Z"])', 'rank_sales.batch_clear(["G:Z"])')
 
-    # Auto-delete every non-log message in the rank sales log channel after 5 seconds.
     auto_clean_event = '''@bot.event
 async def on_message(message: discord.Message) -> None:
     if message.guild is None:
@@ -301,23 +249,29 @@ async def on_message(message: discord.Message) -> None:
     cleanup_channel_id_raw = os.getenv("AUTO_CLEAN_CHANNEL_ID") or RANK_SALES_CHANNEL_ID
     if not cleanup_channel_id_raw:
         return
-
     try:
         cleanup_channel_id = int(cleanup_channel_id_raw)
     except ValueError:
         return
-
     if message.channel.id != cleanup_channel_id:
         return
     if getattr(message, "pinned", False):
         return
 
     def is_log_message(candidate: discord.Message) -> bool:
-        # Keep bot/webhook embed logs, including the Rank Sale Logged embed.
         return bool(candidate.embeds) and (candidate.author.bot or candidate.webhook_id is not None)
 
     if is_log_message(message):
         return
+
+    warning = None
+    if not message.author.bot and message.webhook_id is None:
+        try:
+            warning = await message.channel.send(
+                "🧹 **Clean-up crew is here!** This channel is for logs only. Non-log messages will be swept away in **5 seconds** to keep a clean environment."
+            )
+        except discord.HTTPException:
+            warning = None
 
     await asyncio.sleep(5)
     try:
@@ -325,6 +279,11 @@ async def on_message(message: discord.Message) -> None:
         if is_log_message(current_message) or getattr(current_message, "pinned", False):
             return
         await current_message.delete()
+        if warning is not None:
+            try:
+                await warning.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
     except (discord.NotFound, discord.Forbidden):
         pass
     except discord.HTTPException as exc:
@@ -339,6 +298,6 @@ async def on_message(message: discord.Message) -> None:
     print("Timestamps removed from Rank Sales and Rank Seller Totals.")
     print("Sale summary now falls back to Habbo Username when Discord Username is blank.")
     print("Similar seller names are merged before totals are built.")
-    print("Auto-clean deletes every non-log message in the sales channel.")
+    print("Auto-clean warning enabled for non-log messages in the sales channel.")
 
 import bot
