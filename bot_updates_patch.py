@@ -25,22 +25,38 @@ else:
 update_log_code = r'''
 
 
+def latest_update_title() -> str:
+    for key in ("UPDATE_TITLE", "RAILWAY_GIT_COMMIT_MESSAGE", "GIT_COMMIT_MESSAGE"):
+        value = os.getenv(key)
+        if value:
+            return str(value).splitlines()[0].strip()[:120]
+    try:
+        value = os.popen("git log -1 --pretty=%s").read().strip()
+        if value:
+            return value[:120]
+    except Exception:
+        pass
+    return "MADBOT Update"
+
+
 def load_release_notes() -> dict:
-    default_notes = {
-        "title": "MADBOT Update",
-        "summary": "A new bot update was deployed.",
-        "added": [],
-        "changed": [],
+    title = latest_update_title()
+    notes = {
+        "title": title,
+        "summary": f"MADBOT deployed a new update from the latest code push: {title}.",
+        "added": [f"Latest update detected automatically: {title}"],
+        "changed": ["The update log is generated from the latest deployment instead of staying on an old update."],
         "commands_added": [],
     }
     try:
         with open("release_notes.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            default_notes.update(data)
-    except Exception as exc:
-        print(f"Release notes warning: {type(exc).__name__}: {exc}")
-    return default_notes
+            if data.get("commands_added"):
+                notes["commands_added"] = data.get("commands_added", [])
+    except Exception:
+        pass
+    return notes
 
 
 def list_field(items, empty_text="No items listed.") -> str:
