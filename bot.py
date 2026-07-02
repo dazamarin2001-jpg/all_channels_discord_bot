@@ -587,13 +587,21 @@ async def sale_summary(interaction: discord.Interaction) -> None:
             seller = padded[1].strip() or "Unknown"
             amount_text = padded[5].strip().lower().replace(",", "")
 
-            amount_digits = ""
-            for char in amount_text:
+            amount = 0
+            number = ""
+            for char in amount_text + " ":
                 if char.isdigit():
-                    amount_digits += char
-                elif amount_digits:
-                    break
-            amount = int(amount_digits) if amount_digits else 0
+                    number += char
+                    continue
+                if number:
+                    value = int(number)
+                    idx = amount_text.find(number)
+                    nearby = amount_text[max(0, idx - 2):idx + len(number) + 4]
+                    if "gb" in nearby or "gold" in nearby:
+                        amount += value * 50
+                    else:
+                        amount += value
+                    number = ""
 
             seller_totals[seller] = seller_totals.get(seller, 0) + 1
             seller_amounts[seller] = seller_amounts.get(seller, 0) + amount
