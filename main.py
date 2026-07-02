@@ -44,6 +44,7 @@ path = Path("bot.py")
 if path.exists():
     text = path.read_text()
 
+    # Sales sheets: remove timestamp columns from both tabs.
     text = re.sub(
         r'RANK_SALES_HEADERS = \[[\s\S]*?\]\n\nRANK_SELLER_TOTALS_HEADERS',
         '''RANK_SALES_HEADERS = [
@@ -74,6 +75,7 @@ GOOGLE_SCOPES''',
         count=1,
     )
 
+    # Helpers for merging similar names like "Missbluegerlx2 | Eshly" with "Missbluegerlx2".
     helpers = '''def seller_identity_display(value: object) -> str:
     text = clean_text(value)
     if not text or text.casefold() == "n/a":
@@ -93,6 +95,7 @@ def seller_identity_key(value: object) -> str:
     if "def seller_identity_display(" not in text:
         text = text.replace("\n\ndef amount_to_credits", "\n\n" + helpers + "\ndef amount_to_credits", 1)
 
+    # Sale modal: remove Seller Habbo field; use server display name.
     seller_field = '''    seller_habbo = discord.ui.TextInput(
         label="Seller Habbo Username",
         placeholder="Example: Dazamarin",
@@ -257,6 +260,7 @@ proof = clean_text(self.children[4].value) or "N/A"
     )
     text = text.replace('rank_sales.batch_clear(["H:Z"])', 'rank_sales.batch_clear(["G:Z"])')
 
+    # Donation logging setup: /donate with separate donation channel and Donations sheet tab.
     donation_block = '''DONATIONS_SHEET_NAME = os.getenv("DONATIONS_SHEET_NAME", "Donations")
 DONATION_CHANNEL_ID = os.getenv("DONATION_CHANNEL_ID") or os.getenv("DONATIONS_CHANNEL_ID")
 DONATIONS_HEADERS = ["Logged By", "Donor Habbo", "Amount", "Proof / Notes"]
@@ -370,62 +374,8 @@ async def donate(interaction: discord.Interaction) -> None:
     await interaction.response.send_modal(DonationModal())
 
 
-@bot.tree.command(name="donation-summary", description="Show the top donors based on logged donations.")
-async def donation_summary(interaction: discord.Interaction) -> None:
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    try:
-        worksheet = get_donations_worksheet()
-        values = await asyncio.to_thread(worksheet.get_all_values)
-        rows = values[1:] if len(values) > 1 else []
-        if not rows:
-            await interaction.followup.send("No donations have been logged yet.", ephemeral=True)
-            return
-        totals: dict[str, list[object]] = {}
-        for row in rows:
-            padded = list(row) + [""] * len(DONATIONS_HEADERS)
-            _logged_by, donor, amount, _proof = padded[:4]
-            donor_display = seller_identity_display(donor) or clean_text(donor)
-            key = seller_identity_key(donor) or norm(donor)
-            if not key:
-                continue
-            amount_value = amount_to_credits(amount)
-            if key not in totals:
-                totals[key] = [donor_display or "N/A", 0, 0.0, False]
-            totals[key][1] = int(totals[key][1]) + 1
-            if amount_value is not None:
-                totals[key][2] = float(totals[key][2]) + amount_value
-                totals[key][3] = True
-        parsed = sorted(totals.values(), key=lambda record: (float(record[2]), int(record[1])), reverse=True)
-        lines = []
-        for rank_number, record in enumerate(parsed[:10], start=1):
-            donor_name, donation_count, total_amount, has_amount = record
-            donation_word = "donation" if int(donation_count) == 1 else "donations"
-            lines.append(f"{rank_number}.  **{donor_name}**\n— {donation_count} {donation_word} — {format_credits(float(total_amount) if has_amount else None)} total")
-        if not lines:
-            await interaction.followup.send("No donor names found in the Donations sheet.", ephemeral=True)
-            return
-        embed = discord.Embed(title="Donation Totals", description="\n".join(lines), color=discord.Color.gold(), timestamp=datetime.now(ZoneInfo(TIMEZONE)))
-        embed.set_footer(text="Synced from the Donations sheet")
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except Exception as exc:
-        print(f"Donation summary error: {type(exc).__name__}: {exc}")
-        await interaction.followup.send(f"Could not load donation summary: {type(exc).__name__}: {exc}", ephemeral=True)
-
-
-async def can_setup_donations_sheet(interaction: discord.Interaction) -> bool:
-    if interaction.guild is None:
-        return False
-    member = interaction.user
-    if not isinstance(member, discord.Member):
-        member = await interaction.guild.fetch_member(interaction.user.id)
-    if member.guild_permissions.administrator:
-        return True
-    allowed_roles = {"Chat Moderator", "Rank Seller"}
-    return any(role.name in allowed_roles for role in member.roles)
-
-
 @bot.tree.command(name="setup-donations-sheet", description="Create, clean, and style the Donations Google Sheet tab.")
-@app_commands.check(can_setup_donations_sheet)
+@app_commands.check(can_setup_rank_sales_sheet)
 async def setup_donations_sheet(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
@@ -440,14 +390,9 @@ async def setup_donations_sheet(interaction: discord.Interaction) -> None:
     if "DONATIONS_SHEET_NAME" not in text:
         text = text.replace("bot.tree.add_command(sale_group)\n", donation_block + "bot.tree.add_command(sale_group)\n", 1)
 
-    cleanup_block = '''CLEANUP_CHANNELS_SHEET_NAME = os.getenv("CLEANUP_CHANNELS_SHEET_NAME", "Cleanup Channels")
-CLEANUP_CHANNELS_HEADERS = ["Guild ID", "Channel ID", "Channel Name", "Enabled By"]
+    # Clean-up crew setup. No Google Sheet; command-enabled channels are saved to a small local JSON file.
+    cleanup_block = '''CLEANUP_CHANNELS_FILE = Path(os.getenv("CLEANUP_CHANNELS_FILE", "cleanup_channels.json"))
 EXTRA_CLEANUP_CHANNEL_IDS: set[int] = set()
-
-
-def get_cleanup_channels_worksheet(spreadsheet=None):
-    spreadsheet = spreadsheet or get_spreadsheet()
-    return get_or_create_worksheet(spreadsheet, CLEANUP_CHANNELS_SHEET_NAME, CLEANUP_CHANNELS_HEADERS, rows=300)
 
 
 def get_static_cleanup_channel_ids() -> set[int]:
@@ -467,60 +412,41 @@ def get_static_cleanup_channel_ids() -> set[int]:
     return ids
 
 
+def load_extra_cleanup_channel_ids_from_file() -> set[int]:
+    EXTRA_CLEANUP_CHANNEL_IDS.clear()
+    if not CLEANUP_CHANNELS_FILE.exists():
+        return set(EXTRA_CLEANUP_CHANNEL_IDS)
+    try:
+        data = json.loads(CLEANUP_CHANNELS_FILE.read_text())
+        for entry in data.get("channels", []):
+            try:
+                EXTRA_CLEANUP_CHANNEL_IDS.add(int(entry.get("channel_id")))
+            except (TypeError, ValueError):
+                continue
+    except Exception as exc:
+        print(f"Cleanup channel file warning: {type(exc).__name__}: {exc}")
+    return set(EXTRA_CLEANUP_CHANNEL_IDS)
+
+
+def save_extra_cleanup_channels_to_file() -> None:
+    payload = {"channels": [{"channel_id": str(channel_id)} for channel_id in sorted(EXTRA_CLEANUP_CHANNEL_IDS)]}
+    CLEANUP_CHANNELS_FILE.write_text(json.dumps(payload, indent=2))
+
+
 def get_all_cleanup_channel_ids() -> set[int]:
     return set(EXTRA_CLEANUP_CHANNEL_IDS) | get_static_cleanup_channel_ids()
 
 
-def load_extra_cleanup_channel_ids_from_sheet() -> set[int]:
-    EXTRA_CLEANUP_CHANNEL_IDS.clear()
-    try:
-        sheet = get_cleanup_channels_worksheet()
-        values = sheet.get_all_values()
-        for row in values[1:]:
-            padded = list(row) + [""] * len(CLEANUP_CHANNELS_HEADERS)
-            channel_id = clean_text(padded[1])
-            if not channel_id:
-                continue
-            try:
-                EXTRA_CLEANUP_CHANNEL_IDS.add(int(channel_id))
-            except ValueError:
-                continue
-    except Exception as exc:
-        print(f"Cleanup channel load warning: {type(exc).__name__}: {exc}")
-    return set(EXTRA_CLEANUP_CHANNEL_IDS)
-
-
-def save_cleanup_channel_to_sheet(guild_id: int, channel_id: int, channel_name: str, enabled_by: str) -> None:
-    sheet = get_cleanup_channels_worksheet()
-    values = sheet.get_all_values()
-    row_values = [str(guild_id), str(channel_id), channel_name, enabled_by]
-    for index, row in enumerate(values[1:], start=2):
-        padded = list(row) + [""] * len(CLEANUP_CHANNELS_HEADERS)
-        if clean_text(padded[1]) == str(channel_id):
-            sheet.update(range_name=f"A{index}:D{index}", values=[row_values], value_input_option="USER_ENTERED")
-            EXTRA_CLEANUP_CHANNEL_IDS.add(channel_id)
-            apply_sales_sheet_style(sheet, len(CLEANUP_CHANNELS_HEADERS))
-            return
-    sheet.append_row(row_values, value_input_option="USER_ENTERED")
+def add_cleanup_channel(channel_id: int) -> None:
     EXTRA_CLEANUP_CHANNEL_IDS.add(channel_id)
-    apply_sales_sheet_style(sheet, len(CLEANUP_CHANNELS_HEADERS))
+    save_extra_cleanup_channels_to_file()
 
 
-def remove_cleanup_channel_from_sheet(channel_id: int) -> bool:
-    removed = False
-    try:
-        sheet = get_cleanup_channels_worksheet()
-        values = sheet.get_all_values()
-        for index in range(len(values), 1, -1):
-            row = values[index - 1]
-            padded = list(row) + [""] * len(CLEANUP_CHANNELS_HEADERS)
-            if clean_text(padded[1]) == str(channel_id):
-                sheet.delete_rows(index)
-                removed = True
-        apply_sales_sheet_style(sheet, len(CLEANUP_CHANNELS_HEADERS))
-    finally:
-        EXTRA_CLEANUP_CHANNEL_IDS.discard(channel_id)
-    return removed
+def remove_cleanup_channel(channel_id: int) -> bool:
+    existed = channel_id in EXTRA_CLEANUP_CHANNEL_IDS
+    EXTRA_CLEANUP_CHANNEL_IDS.discard(channel_id)
+    save_extra_cleanup_channels_to_file()
+    return existed
 
 
 def is_cleanup_log_message(candidate: discord.Message) -> bool:
@@ -576,9 +502,8 @@ async def cleanup_enable(interaction: discord.Interaction, channel: discord.Text
         await interaction.response.send_message("Use this in a text channel or pick a text channel.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True, thinking=True)
-    enabled_by = getattr(interaction.user, "display_name", interaction.user.name)
     try:
-        await asyncio.to_thread(save_cleanup_channel_to_sheet, interaction.guild.id, target.id, target.name, enabled_by)
+        await asyncio.to_thread(add_cleanup_channel, target.id)
         deleted = await cleanup_existing_non_logs_in_channel(target)
         await interaction.followup.send(f"🧹 Clean-up crew enabled in {target.mention}. I also removed {deleted} old non-log message(s).", ephemeral=True)
     except Exception as exc:
@@ -596,7 +521,7 @@ async def cleanup_disable(interaction: discord.Interaction, channel: discord.Tex
         return
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        removed = await asyncio.to_thread(remove_cleanup_channel_from_sheet, target.id)
+        removed = await asyncio.to_thread(remove_cleanup_channel, target.id)
         if target.id in get_static_cleanup_channel_ids():
             await interaction.followup.send(f"{target.mention} is still cleaned because it is set in Railway Variables. Remove it from the variable to fully disable it.", ephemeral=True)
         elif removed:
@@ -613,7 +538,7 @@ async def cleanup_disable(interaction: discord.Interaction, channel: discord.Tex
 async def cleanup_list(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        await asyncio.to_thread(load_extra_cleanup_channel_ids_from_sheet)
+        await asyncio.to_thread(load_extra_cleanup_channel_ids_from_file)
         ids = sorted(get_all_cleanup_channel_ids())
         if not ids:
             await interaction.followup.send("No cleanup channels are enabled yet.", ephemeral=True)
@@ -651,12 +576,12 @@ async def on_message(message: discord.Message) -> None:
     if not message.author.bot and message.webhook_id is None:
         try:
             warning = await message.channel.send(
-                "🧹 **Clean-up crew is here!** This channel is for logs only. Non-log messages will be swept away in **5 seconds** to keep a clean environment."
+                "🧹 **Clean-up crew is here!** This channel is for logs only. Non-log messages will be swept away in **10 seconds** to keep a clean environment."
             )
         except discord.HTTPException:
             warning = None
 
-    await asyncio.sleep(5)
+    await asyncio.sleep(10)
     try:
         current_message = await message.channel.fetch_message(message.id)
         if is_cleanup_log_message(current_message) or getattr(current_message, "pinned", False):
@@ -686,7 +611,7 @@ async def clean_existing_cleanup_channel_messages() -> None:
         return
     _cleanup_startup_done = True
 
-    await asyncio.to_thread(load_extra_cleanup_channel_ids_from_sheet)
+    await asyncio.to_thread(load_extra_cleanup_channel_ids_from_file)
     cleanup_ids = get_all_cleanup_channel_ids()
     if not cleanup_ids:
         return
@@ -713,6 +638,6 @@ async def clean_existing_cleanup_channel_messages() -> None:
     print("Timestamps removed from Rank Sales and Rank Seller Totals.")
     print("Similar seller names are merged before totals are built.")
     print("Donation logging command and Donations sheet tab enabled.")
-    print("Cleanup crew channel commands enabled.")
+    print("Cleanup crew commands enabled with no Google Sheet and 10-second warning.")
 
 import bot
