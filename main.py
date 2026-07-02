@@ -161,10 +161,10 @@ proof = clean_text(self.children[4].value) or "N/A"
 
         amount_value = amount_to_credits(amount)
         if key not in totals:
-            totals[key] = [discord_seller or "N/A", seller_habbo or "N/A", 0, 0.0, rank_sold or "N/A", False]
+            totals[key] = [discord_seller or seller_habbo or "N/A", seller_habbo or discord_seller or "N/A", 0, 0.0, rank_sold or "N/A", False]
         record = totals[key]
-        record[0] = discord_seller or record[0]
-        record[1] = seller_habbo or record[1]
+        record[0] = discord_seller or seller_habbo or record[0]
+        record[1] = seller_habbo or discord_seller or record[1]
         record[2] = int(record[2]) + 1
         if amount_value is not None:
             record[3] = float(record[3]) + amount_value
@@ -220,8 +220,8 @@ proof = clean_text(self.children[4].value) or "N/A"
             total_amount = (previous_amount or 0) + (new_amount or 0)
 
         updated = [
-            clean_text(discord_seller) or padded[0] or "N/A",
-            clean_text(seller_habbo) or padded[1] or "N/A",
+            clean_text(discord_seller) or clean_text(seller_habbo) or padded[0] or "N/A",
+            clean_text(seller_habbo) or clean_text(discord_seller) or padded[1] or "N/A",
             total_sales,
             format_credits(total_amount),
             clean_text(rank_sold) or padded[4] or "N/A",
@@ -231,8 +231,8 @@ proof = clean_text(self.children[4].value) or "N/A"
         return
 
     new_row = [
-        clean_text(discord_seller) or "N/A",
-        clean_text(seller_habbo) or "N/A",
+        clean_text(discord_seller) or clean_text(seller_habbo) or "N/A",
+        clean_text(seller_habbo) or clean_text(discord_seller) or "N/A",
         1,
         format_credits(new_amount),
         clean_text(rank_sold) or "N/A",
@@ -242,10 +242,23 @@ proof = clean_text(self.children[4].value) or "N/A"
     apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))
 ''')
 
+    # In /sale summary, show Habbo Username when Discord Username is blank or N/A.
+    text = text.replace(
+        '''            discord_username = padded[0].strip()
+            sales_count = padded[2].strip() or "0"''',
+        '''            discord_username = padded[0].strip()
+            habbo_username = padded[1].strip()
+            if not discord_username or discord_username.casefold() == "n/a":
+                discord_username = habbo_username
+            sales_count = padded[2].strip() or "0"''',
+        1,
+    )
+
     text = text.replace('rank_sales.batch_clear(["H:Z"])', 'rank_sales.batch_clear(["G:Z"])')
 
     path.write_text(text)
     print("Sale log modal now uses server Discord username automatically.")
     print("Timestamps removed from Rank Sales and Rank Seller Totals.")
+    print("Sale summary now falls back to Habbo Username when Discord Username is blank.")
 
 import bot
