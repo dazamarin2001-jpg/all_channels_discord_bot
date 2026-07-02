@@ -20,6 +20,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path("bot.py")
           text = path.read_text(encoding="utf-8")
@@ -35,27 +36,7 @@ jobs:
             print(f"Commands synced instantly to test server {TEST_GUILD_ID}.")'''
           text = text.replace(old_sync, new_sync)
 
-          old_sale = '''@bot.tree.command(name="sale", description="Open a form to log a rank sale into Google Sheets.")
-async def rank_sale(interaction: discord.Interaction) -> None:
-    if interaction.guild is None:
-        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
-        return
-
-    if not await member_can_log_sales(interaction):
-        await interaction.response.send_message("You do not have permission to log rank sales.", ephemeral=True)
-        return
-
-    if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
-        await interaction.response.send_message(
-            "Rank sales logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.",
-            ephemeral=True,
-        )
-        return
-
-    await interaction.response.send_modal(RankSaleModal())
-'''
-
-          new_sale = '''sale_group = app_commands.Group(name="sale", description="Rank sale tools.")
+          sale_group_code = '''sale_group = app_commands.Group(name="sale", description="Rank sale tools.")
 
 
 @sale_group.command(name="log", description="Open a form to log a rank sale into Google Sheets.")
@@ -125,9 +106,16 @@ async def sale_summary(interaction: discord.Interaction) -> None:
 bot.tree.add_command(sale_group)
 '''
 
-          if old_sale not in text:
-              raise SystemExit("Could not find the existing /sale command block to replace.")
-          text = text.replace(old_sale, new_sale, 1)
+          if 'sale_group = app_commands.Group(name="sale"' not in text:
+              pattern = re.compile(
+                  r'@bot\.tree\.command\(name="sale", description="Open a form to log a rank sale into Google Sheets\."\)\s*'
+                  r'async def rank_sale\(interaction: discord\.Interaction\) -> None:\s*'
+                  r'.*?await interaction\.response\.send_modal\(RankSaleModal\(\)\)\s*',
+                  re.DOTALL,
+              )
+              text, count = pattern.subn(sale_group_code + "\n", text, count=1)
+              if count != 1:
+                  raise SystemExit("Could not find the existing /sale command block to replace.")
 
           path.write_text(text, encoding="utf-8")
           PY
