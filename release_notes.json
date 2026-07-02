@@ -1,9 +1,10 @@
 {
   "title": "Better Update Logs",
-  "summary": "Update logs now show only what was added or changed in the latest update.",
+  "summary": "The update-log channel now shows a clear changelog for the latest update only, instead of listing every active command on the bot.",
   "added": [
-    "Release notes file for clean update-log messages",
-    "Added section that explains exactly what was added in the update"
+    "A short description of what the update does",
+    "A dedicated Added section for new features",
+    "A Commands Added section that explains what each new command is for"
   ],
   "changed": [
     "Deployment logs will stop showing every active command by default",
