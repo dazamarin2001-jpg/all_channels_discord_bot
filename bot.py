@@ -527,6 +527,7 @@ async def on_ready() -> None:
     if not bot.synced_commands_once:
         if TEST_GUILD_ID:
             guild_object = discord.Object(id=int(TEST_GUILD_ID))
+            bot.tree.clear_commands(guild=guild_object)
             bot.tree.copy_global_to(guild=guild_object)
             await bot.tree.sync(guild=guild_object)
             print(f"Commands synced instantly to test server {TEST_GUILD_ID}.")
@@ -543,8 +544,11 @@ async def ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(f"Pong! {round(bot.latency * 1000)} ms")
 
 
-@bot.tree.command(name="sale", description="Open a form to log a rank sale into Google Sheets.")
-async def rank_sale(interaction: discord.Interaction) -> None:
+sale_group = app_commands.Group(name="sale", description="Rank sale tools.")
+
+
+@sale_group.command(name="log", description="Open a form to log a rank sale into Google Sheets.")
+async def sale_log(interaction: discord.Interaction) -> None:
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
@@ -561,6 +565,53 @@ async def rank_sale(interaction: discord.Interaction) -> None:
         return
 
     await interaction.response.send_modal(RankSaleModal())
+
+
+@sale_group.command(name="summary", description="Show the top rank sellers based on logged sales.")
+async def sale_summary(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
+        await interaction.followup.send(
+            "Rank sales logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        worksheet = await asyncio.to_thread(get_rank_sales_worksheet)
+        values = await asyncio.to_thread(worksheet.get_all_values)
+        rows = values[1:] if len(values) > 1 else []
+
+        if not rows:
+            await interaction.followup.send("No rank sales have been logged yet.", ephemeral=True)
+            return
+
+        seller_totals = {}
+        for row in rows:
+            seller = row[2].strip() if len(row) > 2 and row[2].strip() else "Unknown"
+            seller_totals[seller] = seller_totals.get(seller, 0) + 1
+
+        top_sellers = sorted(seller_totals.items(), key=lambda item: item[1], reverse=True)[:10]
+        leaderboard = "\n".join(
+            f"{index}. {seller}: {count} sale{'s' if count != 1 else ''}"
+            for index, (seller, count) in enumerate(top_sellers, start=1)
+        )
+
+        embed = discord.Embed(
+            title="Rank Seller Totals",
+            description=leaderboard,
+            color=discord.Color.green(),
+            timestamp=datetime.now(ZoneInfo(TIMEZONE)),
+        )
+        embed.add_field(name="Total Sales Logged", value=str(len(rows)), inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as exc:
+        print(f"Rank sales summary error: {type(exc).__name__}: {exc}")
+        await interaction.followup.send(f"Could not load sales summary: {type(exc).__name__}: {exc}", ephemeral=True)
+
+
+bot.tree.add_command(sale_group)
 
 
 @bot.tree.command(name="setup-rank-sales-sheet", description="Clean and style the rank sales Google Sheet.")
