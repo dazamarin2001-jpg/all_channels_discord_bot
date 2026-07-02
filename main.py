@@ -64,7 +64,17 @@ proof = clean_text(self.children[4].value) or "N/A"
         1,
     )
 
+    # Make new rows in Rank Seller Totals write directly into A:F.
+    # This prevents Google Sheets from appending the totals row into G:K when stray formulas/cells exist.
+    old_append_totals = '''    totals_sheet.append_row(new_row, value_input_option="USER_ENTERED")
+    apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))'''
+    new_append_totals = '''    next_row = max(len(values) + 1, 2)
+    totals_sheet.update(range_name=f"A{next_row}:F{next_row}", values=[new_row], value_input_option="USER_ENTERED")
+    apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))'''
+    text = text.replace(old_append_totals, new_append_totals, 1)
+
     path.write_text(text)
     print("Sale log modal now uses server Discord username automatically.")
+    print("Rank Seller Totals now writes new sellers into A:F.")
 
 import bot
