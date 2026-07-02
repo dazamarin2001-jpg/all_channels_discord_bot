@@ -22,41 +22,39 @@ else:
         'UPDATE_LOG_CHANNEL_ID = os.getenv("UPDATE_LOG_CHANNEL_ID")\n',
     )
 
-auto_update_code = r'''
+update_log_code = r'''
 
 
-def build_command_update_fields() -> list[tuple[str, str]]:
-    commands = []
+def load_release_notes() -> dict:
+    default_notes = {
+        "title": "MADBOT Update",
+        "summary": "A new bot update was deployed.",
+        "added": [],
+        "changed": [],
+        "commands_added": [],
+    }
     try:
-        commands = list(bot.tree.get_commands())
-    except Exception:
-        commands = []
+        with open("release_notes.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            default_notes.update(data)
+    except Exception as exc:
+        print(f"Release notes warning: {type(exc).__name__}: {exc}")
+    return default_notes
 
-    if not commands:
-        return [("Commands", "No slash commands were found on this deployment.")]
 
+def list_field(items, empty_text="No items listed.") -> str:
+    if not items:
+        return empty_text
     lines = []
-    for command in sorted(commands, key=lambda item: item.name):
-        name = getattr(command, "name", "unknown")
-        description = getattr(command, "description", "No description.") or "No description."
-        lines.append(f"• `/{name}` — {description}")
-
-    fields = []
-    current = ""
-    field_number = 1
-    for line in lines:
-        if len(current) + len(line) + 1 > 1000:
-            title = "Commands Added / Updated" if field_number == 1 else f"Commands Added / Updated {field_number}"
-            fields.append((title, current.strip()))
-            field_number += 1
-            current = ""
-        current += line + "\n"
-
-    if current.strip():
-        title = "Commands Added / Updated" if field_number == 1 else f"Commands Added / Updated {field_number}"
-        fields.append((title, current.strip()))
-
-    return fields
+    for item in items:
+        if isinstance(item, dict):
+            name = str(item.get("name", "")).strip()
+            desc = str(item.get("description", "")).strip()
+            lines.append(f"• `{name}` — {desc}" if name and desc else f"• {name or desc}")
+        else:
+            lines.append(f"• {str(item).strip()}")
+    return "\n".join(line for line in lines if line.strip())[:1024]
 
 
 async def post_rank_sale_update_log_once() -> None:
@@ -85,53 +83,40 @@ async def post_rank_sale_update_log_once() -> None:
         print(f"Could not fetch UPDATE_LOG_CHANNEL_ID={channel_id}: {type(exc).__name__}: {exc}")
         return
 
-    if not hasattr(channel, "send"):
-        print(f"UPDATE_LOG_CHANNEL_ID={channel_id} is not a sendable channel; automatic update-log notification skipped.")
-        return
+    notes = load_release_notes()
+    title = str(notes.get("title") or "MADBOT Update")[:120]
+    summary = str(notes.get("summary") or "A new bot update was deployed.")[:300]
 
     embed = discord.Embed(
-        title="MADBOT Deployment Update",
-        description="A new bot update was deployed. Below are the commands currently live on this deployment.",
+        title=f"MADBOT Update — {title}",
+        description=summary,
         color=discord.Color.blurple(),
         timestamp=datetime.now(ZoneInfo(TIMEZONE)),
     )
-
-    for name, value in build_command_update_fields():
-        embed.add_field(name=name, value=value, inline=False)
-
-    embed.add_field(
-        name="Update Log Status",
-        value="Automatic update-log posting is active and using the configured update-log channel.",
-        inline=False,
-    )
-    embed.set_footer(text="MADBOT automatic deployment log")
+    embed.add_field(name="Added", value=list_field(notes.get("added", [])), inline=False)
+    if notes.get("commands_added"):
+        embed.add_field(name="Commands Added", value=list_field(notes.get("commands_added", [])), inline=False)
+    if notes.get("changed"):
+        embed.add_field(name="Changed / Fixed", value=list_field(notes.get("changed", [])), inline=False)
+    embed.set_footer(text="MADBOT automatic update log")
 
     try:
-        message = await channel.send(
-            content="MADBOT Deployment Update — new bot changes are live.",
-            embed=embed,
-        )
-        print(f"Automatic deployment update posted to {channel.id}: {message.jump_url}")
+        message = await channel.send(content=f"MADBOT Update — {title}", embed=embed)
+        print(f"Automatic update log posted to {channel.id}: {message.jump_url}")
     except discord.Forbidden as exc:
         print(f"Bot cannot send to UPDATE_LOG_CHANNEL_ID={channel_id}: {type(exc).__name__}: {exc}")
     except discord.DiscordException as exc:
-        print(f"Could not send automatic deployment update: {type(exc).__name__}: {exc}")
+        print(f"Could not send automatic update log: {type(exc).__name__}: {exc}")
 '''
 
-if "async def post_rank_sale_update_log_once" not in s and "async def post_deployment_update_log_once" not in s:
-    s = s.replace("\n\nbot.run(TOKEN)", auto_update_code + "\n\nbot.run(TOKEN)")
+if "def load_release_notes" not in s:
+    s = s.replace("\n\nbot.run(TOKEN)", update_log_code + "\n\nbot.run(TOKEN)")
 
 if "await post_rank_sale_update_log_once()" not in s:
     rep(
         '    if not stat_loop.is_running():\n        stat_loop.start()',
         '    if not stat_loop.is_running():\n        stat_loop.start()\n    await post_rank_sale_update_log_once()',
     )
-
-# Refresh older already-patched bot.py deployments to use a generic deployment update instead of a hard-coded rank-sales message.
-rep('title="MADBOT Update — Rank Sales Update"', 'title="MADBOT Deployment Update"')
-rep('description="The rank sales update is live on the latest deployment."', 'description="A new bot update was deployed. Below are the commands currently live on this deployment."')
-rep('content="Rank Sale Update Pushed — /rank-sale is live and running on the latest deployment."', 'content="MADBOT Deployment Update — new bot changes are live."')
-rep('print(f"Automatic update-log notification posted to {channel.id}: {message.jump_url}")', 'print(f"Automatic deployment update posted to {channel.id}: {message.jump_url}")')
 
 p.write_text(s, encoding="utf-8")
 print("Bot updates patch applied.")
