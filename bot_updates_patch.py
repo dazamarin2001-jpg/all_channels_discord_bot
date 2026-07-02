@@ -56,15 +56,10 @@ async def post_rank_sale_update_log_once() -> None:
         return
 
     embed = discord.Embed(
-        title="MADBOT Update Log Test",
-        description="This is an automatic test post for the configured update-log channel.",
+        title="MADBOT Update — Rank Sales Update",
+        description="The rank sales update is live on the latest deployment.",
         color=discord.Color.blurple(),
         timestamp=datetime.now(ZoneInfo(TIMEZONE)),
-    )
-    embed.add_field(
-        name="Status",
-        value="Update-log channel test is working if you can see this message.",
-        inline=False,
     )
     embed.add_field(
         name="Commands Added",
@@ -79,14 +74,19 @@ async def post_rank_sale_update_log_once() -> None:
         value="• Rank sale Discord form\n• Google Sheets logging\n• Rank-sales channel log",
         inline=False,
     )
-    embed.set_footer(text="MADBOT automatic update-log test")
+    embed.add_field(
+        name="Changed / Fixed",
+        value="• Automatic update-log posting confirmed\n• Rank sale summary now posts to the configured update-log channel",
+        inline=False,
+    )
+    embed.set_footer(text="MADBOT automatic deployment log")
 
     try:
         message = await channel.send(
-            content="Update Log Test — the configured update-log channel is working.",
+            content="Rank Sale Update Pushed — /rank-sale is live and running on the latest deployment.",
             embed=embed,
         )
-        print(f"Automatic update-log test posted to {channel.id}: {message.jump_url}")
+        print(f"Automatic update-log notification posted to {channel.id}: {message.jump_url}")
     except discord.Forbidden as exc:
         print(f"Bot cannot send to UPDATE_LOG_CHANNEL_ID={channel_id}: {type(exc).__name__}: {exc}")
     except discord.DiscordException as exc:
@@ -102,29 +102,14 @@ if "await post_rank_sale_update_log_once()" not in s:
         '    if not stat_loop.is_running():\n        stat_loop.start()\n    await post_rank_sale_update_log_once()',
     )
 
-# Refresh older already-patched bot.py deployments with the latest automatic update-log wording.
-rep(
-    '''    embed = discord.Embed(
-        title="MADBOT Update — Rank Sales Update",
-        description="The rank sales update is live on the latest deployment.",
-        color=discord.Color.blurple(),
-        timestamp=datetime.now(ZoneInfo(TIMEZONE)),
-    )''',
-    '''    embed = discord.Embed(
-        title="MADBOT Update Log Test",
-        description="This is an automatic test post for the configured update-log channel.",
-        color=discord.Color.blurple(),
-        timestamp=datetime.now(ZoneInfo(TIMEZONE)),
-    )'''
-)
-rep(
-    'content="Rank Sale Update Pushed — /rank-sale is live and running on the latest deployment."',
-    'content="Update Log Test — the configured update-log channel is working."'
-)
-rep(
-    'print(f"Automatic update-log notification posted to {channel.id}: {message.jump_url}")',
-    'print(f"Automatic update-log test posted to {channel.id}: {message.jump_url}")'
-)
+# Refresh older already-patched bot.py deployments with the real update-log wording.
+rep('title="MADBOT Update Log Test"', 'title="MADBOT Update — Rank Sales Update"')
+rep('description="This is an automatic test post for the configured update-log channel."', 'description="The rank sales update is live on the latest deployment."')
+rep('name="Status"', 'name="Changed / Fixed"')
+rep('value="Update-log channel test is working if you can see this message."', 'value="• Automatic update-log posting confirmed\\n• Rank sale summary now posts to the configured update-log channel"')
+rep('content="Update Log Test — the configured update-log channel is working."', 'content="Rank Sale Update Pushed — /rank-sale is live and running on the latest deployment."')
+rep('print(f"Automatic update-log test posted to {channel.id}: {message.jump_url}")', 'print(f"Automatic update-log notification posted to {channel.id}: {message.jump_url}")')
+rep('embed.set_footer(text="MADBOT automatic update-log test")', 'embed.set_footer(text="MADBOT automatic deployment log")')
 
 p.write_text(s, encoding="utf-8")
 print("Bot updates patch applied.")
