@@ -12,6 +12,19 @@ def replace_top_function(text: str, name: str, replacement: str) -> str:
     return text[:start] + replacement.rstrip() + text[next_start:]
 
 
+def upsert_on_message_event(text: str, replacement: str) -> str:
+    start = text.find("@bot.event\nasync def on_message(")
+    if start == -1:
+        marker = '@bot.tree.command(description="Check whether the bot is responding.")\n'
+        return text.replace(marker, replacement.rstrip() + "\n\n" + marker, 1)
+
+    next_command = text.find("\n\n@bot.tree.command", start + 1)
+    next_event = text.find("\n\n@bot.event", start + 1)
+    candidates = [pos for pos in (next_command, next_event) if pos != -1]
+    end = min(candidates) if candidates else len(text)
+    return text[:start] + replacement.rstrip() + text[end:]
+
+
 path = Path("bot.py")
 if path.exists():
     text = path.read_text()
@@ -279,11 +292,9 @@ proof = clean_text(self.children[4].value) or "N/A"
 
     text = text.replace('rank_sales.batch_clear(["H:Z"])', 'rank_sales.batch_clear(["G:Z"])')
 
-    # Auto-delete human chatter in the rank sales log channel after 5 seconds.
+    # Auto-delete every non-log message in the rank sales log channel after 5 seconds.
     auto_clean_event = '''@bot.event
 async def on_message(message: discord.Message) -> None:
-    if message.author.bot:
-        return
     if message.guild is None:
         return
 
@@ -301,9 +312,19 @@ async def on_message(message: discord.Message) -> None:
     if getattr(message, "pinned", False):
         return
 
+    def is_log_message(candidate: discord.Message) -> bool:
+        # Keep bot/webhook embed logs, including the Rank Sale Logged embed.
+        return bool(candidate.embeds) and (candidate.author.bot or candidate.webhook_id is not None)
+
+    if is_log_message(message):
+        return
+
     await asyncio.sleep(5)
     try:
-        await message.delete()
+        current_message = await message.channel.fetch_message(message.id)
+        if is_log_message(current_message) or getattr(current_message, "pinned", False):
+            return
+        await current_message.delete()
     except (discord.NotFound, discord.Forbidden):
         pass
     except discord.HTTPException as exc:
@@ -311,15 +332,13 @@ async def on_message(message: discord.Message) -> None:
 
 
 '''
-    if "AUTO_CLEAN_CHANNEL_ID" not in text and "async def on_message(message: discord.Message)" not in text:
-        marker = '@bot.tree.command(description="Check whether the bot is responding.")\n'
-        text = text.replace(marker, auto_clean_event + marker, 1)
+    text = upsert_on_message_event(text, auto_clean_event)
 
     path.write_text(text)
     print("Sale log modal now uses server Discord username automatically.")
     print("Timestamps removed from Rank Sales and Rank Seller Totals.")
     print("Sale summary now falls back to Habbo Username when Discord Username is blank.")
     print("Similar seller names are merged before totals are built.")
-    print("Auto-clean enabled for non-log messages in the sales channel.")
+    print("Auto-clean deletes every non-log message in the sales channel.")
 
 import bot
