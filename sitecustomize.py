@@ -53,16 +53,26 @@ def _patch_discord_bot_event() -> None:
         bot_name = str(bot.user) if bot.user else "Unknown bot"
         bot_id = bot.user.id if bot.user else "unknown"
 
-        content = "✅ **Bot Update Pushed** — the bot is online and running the latest deployment."
+        content = "✅ **Rank Sale Update Pushed** — `/rank-sale` is live and running on the latest deployment."
         embed = discord.Embed(
-            title="Bot Update Pushed",
-            description="The bot is online and running the latest deployment.",
+            title="Rank Sale Update Pushed",
+            description="The `/rank-sale` logging update is now live after the latest Railway/GitHub deployment.",
             color=discord.Color.green(),
             timestamp=started_at,
         )
         embed.add_field(name="Bot", value=f"{bot_name} (`{bot_id}`)", inline=False)
-        embed.add_field(name="Status", value="Online", inline=True)
-        embed.add_field(name="Source", value="Railway/GitHub deployment", inline=True)
+        embed.add_field(
+            name="What's included",
+            value=(
+                "• `/rank-sale` opens a Discord form.\n"
+                "• Logs Seller Habbo, Buyer, Rank Sold, Amount, and Proof/Notes.\n"
+                "• Saves rank sales to Google Sheets.\n"
+                "• Posts the rank sale log into the configured rank-sales channel."
+            ),
+            inline=False,
+        )
+        embed.add_field(name="Required channel variable", value="`RANK_SALES_CHANNEL_ID`", inline=True)
+        embed.add_field(name="Update log variable", value="`UPDATE_LOG_CHANNEL_ID`", inline=True)
         embed.set_footer(text="Automatic startup update log")
 
         try:
