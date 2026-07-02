@@ -25,28 +25,52 @@ def _patch_discord_bot_event() -> None:
 
     original_event = commands.Bot.event
 
-    async def send_update_log(bot: commands.Bot) -> None:
+    async def find_update_log_channel(bot: commands.Bot):
         channel_id_value = os.getenv("UPDATE_LOG_CHANNEL_ID") or os.getenv("BOT_UPDATE_LOG_CHANNEL_ID")
-        if not channel_id_value:
-            print("UPDATE_LOG_CHANNEL_ID is not set; skipping Discord update log message.")
-            return
-
-        try:
-            channel_id = int(channel_id_value)
-        except ValueError:
-            print("UPDATE_LOG_CHANNEL_ID must be a Discord channel ID number; skipping update log message.")
-            return
-
-        channel = bot.get_channel(channel_id)
-        if channel is None:
+        if channel_id_value:
             try:
-                channel = await bot.fetch_channel(channel_id)
-            except discord.DiscordException as exc:
-                print(f"Could not fetch UPDATE_LOG_CHANNEL_ID={channel_id}: {type(exc).__name__}: {exc}")
-                return
+                channel_id = int(channel_id_value)
+            except ValueError:
+                print("UPDATE_LOG_CHANNEL_ID must be a Discord channel ID number; trying channel-name fallback.")
+            else:
+                channel = bot.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await bot.fetch_channel(channel_id)
+                    except discord.DiscordException as exc:
+                        print(f"Could not fetch UPDATE_LOG_CHANNEL_ID={channel_id}: {type(exc).__name__}: {exc}")
+                        channel = None
+                if channel is not None and hasattr(channel, "send"):
+                    return channel
+                print(f"UPDATE_LOG_CHANNEL_ID={channel_id} is not a sendable Discord channel; trying channel-name fallback.")
+        else:
+            print("UPDATE_LOG_CHANNEL_ID is not set; trying channel-name fallback.")
 
-        if not hasattr(channel, "send"):
-            print(f"UPDATE_LOG_CHANNEL_ID={channel_id} is not a sendable Discord channel.")
+        preferred_names = (
+            "update-log",
+            "updates-log",
+            "bot-updates",
+            "bot-update-log",
+            "staff-updates",
+            "updates",
+        )
+        for guild in bot.guilds:
+            for channel in guild.text_channels:
+                normalized = channel.name.casefold().replace("︱", "-").replace("│", "-").replace("|", "-")
+                normalized = "-".join(part for part in normalized.split() if part)
+                if any(name in normalized for name in preferred_names):
+                    permissions = channel.permissions_for(guild.me) if guild.me else None
+                    if permissions and permissions.view_channel and permissions.send_messages:
+                        print(f"Using update log fallback channel #{channel.name} ({channel.id}).")
+                        return channel
+                    print(f"Found fallback channel #{channel.name} ({channel.id}) but missing send/view permission.")
+
+        print("No update log channel found. Set UPDATE_LOG_CHANNEL_ID to the Discord channel ID.")
+        return None
+
+    async def send_update_log(bot: commands.Bot) -> None:
+        channel = await find_update_log_channel(bot)
+        if channel is None:
             return
 
         started_at = datetime.now(timezone.utc)
@@ -77,11 +101,13 @@ def _patch_discord_bot_event() -> None:
 
         try:
             await channel.send(content=content, embed=embed)
+            print(f"Posted rank sale update log to #{getattr(channel, 'name', channel.id)} ({channel.id}).")
         except discord.Forbidden as exc:
             try:
                 await channel.send(content=content)
+                print(f"Posted plain-text rank sale update log to #{getattr(channel, 'name', channel.id)} ({channel.id}).")
             except discord.DiscordException:
-                print(f"Bot cannot send to UPDATE_LOG_CHANNEL_ID={channel_id}: {type(exc).__name__}: {exc}")
+                print(f"Bot cannot send to update log channel {channel.id}: {type(exc).__name__}: {exc}")
         except discord.DiscordException as exc:
             print(f"Could not send update log message: {type(exc).__name__}: {exc}")
 
