@@ -9,12 +9,18 @@ def rep(old: str, new: str) -> None:
     if old in s:
         s = s.replace(old, new)
 
-# Optional Railway variable for the default Discord bot update channel.
-if "BOT_UPDATE_CHANNEL_ID" not in s:
+# Exact Railway variable for the Discord bot update log channel.
+# UPDATE_LOG_CHANNEL_ID is the preferred name. BOT_UPDATE_CHANNEL_ID still works as an alias.
+if "UPDATE_LOG_CHANNEL_ID" not in s:
     rep(
         'TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")\n',
         'TIMEZONE = os.getenv("TIMEZONE", "America/Chicago")\n'
+        'UPDATE_LOG_CHANNEL_ID = os.getenv("UPDATE_LOG_CHANNEL_ID") or os.getenv("BOT_UPDATE_CHANNEL_ID")\n',
+    )
+elif "BOT_UPDATE_CHANNEL_ID" in s and "UPDATE_LOG_CHANNEL_ID =" not in s:
+    rep(
         'BOT_UPDATE_CHANNEL_ID = os.getenv("BOT_UPDATE_CHANNEL_ID")\n',
+        'UPDATE_LOG_CHANNEL_ID = os.getenv("UPDATE_LOG_CHANNEL_ID") or os.getenv("BOT_UPDATE_CHANNEL_ID")\n',
     )
 
 update_code = r'''
@@ -46,25 +52,23 @@ async def find_default_bot_update_channel(guild: discord.Guild | None):
     if guild is None:
         return None
 
-    if BOT_UPDATE_CHANNEL_ID:
-        try:
-            channel_id = int(BOT_UPDATE_CHANNEL_ID)
-            channel = guild.get_channel(channel_id) or bot.get_channel(channel_id)
-            if channel is None:
-                channel = await bot.fetch_channel(channel_id)
-            if isinstance(channel, discord.TextChannel):
-                return channel
-        except Exception:
-            pass
+    if not UPDATE_LOG_CHANNEL_ID:
+        return None
 
-    preferred_names = {
-        "bot-updates", "bot-update", "bot-update-logs", "bot-logs",
-        "madbot-updates", "update-logs", "updates"
-    }
-    for channel in guild.text_channels:
-        lowered = channel.name.casefold()
-        if lowered in preferred_names or ("bot" in lowered and "update" in lowered):
+    try:
+        channel_id = int(UPDATE_LOG_CHANNEL_ID)
+    except ValueError:
+        return None
+
+    try:
+        channel = guild.get_channel(channel_id) or bot.get_channel(channel_id)
+        if channel is None:
+            channel = await bot.fetch_channel(channel_id)
+        if isinstance(channel, discord.TextChannel):
             return channel
+    except Exception:
+        return None
+
     return None
 
 
@@ -89,12 +93,12 @@ def build_bot_update_embed(version: str, added: str, changed: str, author_name: 
     return embed
 
 
-@bot.tree.command(name="bot-update", description="Post a clean MADBOT update log to the bot update channel.")
+@bot.tree.command(name="bot-update", description="Post a clean MADBOT update log to the configured update-log channel.")
 @app_commands.describe(
     version="Update version or title, example: v1.4 Rank Sales Update",
     added="New features. Separate items with semicolons or new lines.",
     changed="Fixes/changes. Separate items with semicolons or new lines.",
-    channel="Optional channel. If empty, BOT_UPDATE_CHANNEL_ID or a bot-updates channel is used.",
+    channel="Optional channel override for this post.",
     ping_role="Optional role to ping with the update.",
 )
 async def bot_update(
@@ -103,7 +107,7 @@ async def bot_update(
     added: str,
     changed: str = "",
     channel: discord.TextChannel | None = None,
-    ping_role: discord.Role | None = None,
+    ping_role: discord.Role | None = None
 ) -> None:
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
@@ -118,7 +122,7 @@ async def bot_update(
     target_channel = channel or await find_default_bot_update_channel(interaction.guild)
     if target_channel is None:
         await interaction.followup.send(
-            "I could not find a bot update channel. Either use the channel option or add BOT_UPDATE_CHANNEL_ID in Railway Variables.",
+            "I could not find the update-log channel. Add UPDATE_LOG_CHANNEL_ID in Railway Variables, or use the channel option in /bot-update.",
             ephemeral=True,
         )
         return
@@ -151,14 +155,18 @@ async def bot_update_channel(interaction: discord.Interaction, channel: discord.
         return
 
     await interaction.response.send_message(
-        f"Use this Railway variable for automatic default posting:\n```env\nBOT_UPDATE_CHANNEL_ID={channel.id}\n```\n"
-        f"Or use `/bot-update` and choose {channel.mention} in the channel option.",
+        f"Use this Railway variable for update-log posting:\n```env\nUPDATE_LOG_CHANNEL_ID={channel.id}\n```\n"
+        f"Then use `/bot-update` to post an update to {channel.mention}.",
         ephemeral=True,
     )
 '''
 
 if "name=\"bot-update\"" not in s:
     s = s.replace("\n\nbot.run(TOKEN)", update_code + "\n\nbot.run(TOKEN)")
+else:
+    s = s.replace('BOT_UPDATE_CHANNEL_ID', 'UPDATE_LOG_CHANNEL_ID')
+    s = s.replace('Either use the channel option or add UPDATE_LOG_CHANNEL_ID in Railway Variables.', 'Add UPDATE_LOG_CHANNEL_ID in Railway Variables, or use the channel option in /bot-update.')
+    s = s.replace('Either use the channel option or add UPDATE_LOG_CHANNEL_ID in Railway Variables.', 'Add UPDATE_LOG_CHANNEL_ID in Railway Variables, or use the channel option in /bot-update.')
 
 p.write_text(s, encoding="utf-8")
 print("Bot updates patch applied.")
