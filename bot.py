@@ -57,12 +57,22 @@ if not TOKEN:
 
 intents = discord.Intents.default()
 intents.members = True
+intents.reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 bot.synced_commands_once = False
+bot.request_ticket_view_loaded = False
 
 STAFF_ROLE_NAMES = (
     "Founder", "Foundation Advisor", "Supreme Command", "Elite Command",
     "Trial Moderation", "Administrator", "Moderator", "Staff"
+)
+
+REQUEST_ROLE_NAMES = (
+    "Badge Admin",
+    "Room Rights",
+    "Chat Moderator",
+    "Rank Seller",
+    "Portal Admin",
 )
 
 AGENCY_ROLES = [
@@ -75,7 +85,10 @@ HIERARCHY_ROLES = [
     ("Founder", discord.Permissions(administrator=True)),
     ("Foundation Advisor", discord.Permissions(administrator=True)),
     ("Supreme Command", discord.Permissions(administrator=True)),
-    ("Elite Command", discord.Permissions(manage_guild=True, manage_roles=True, manage_channels=True, kick_members=True, ban_members=True, manage_messages=True, moderate_members=True)),
+    ("Elite Command", discord.Permissions(
+        manage_guild=True, manage_roles=True, manage_channels=True,
+        kick_members=True, ban_members=True, manage_messages=True, moderate_members=True
+    )),
     ("Trial Moderation", discord.Permissions(kick_members=True, manage_messages=True, moderate_members=True)),
     ("Administrator", discord.Permissions(administrator=True)),
     ("Moderator", discord.Permissions(kick_members=True, manage_messages=True, moderate_members=True)),
@@ -205,6 +218,40 @@ def format_credits(value: float | None) -> str:
     return f"{value:g}c"
 
 
+def member_display_name(member: discord.abc.User) -> str:
+    return getattr(member, "nick", None) or getattr(member, "display_name", member.name)
+
+
+def get_role_by_name(guild: discord.Guild, role_name: str) -> discord.Role | None:
+    wanted = role_name.casefold()
+    return discord.utils.find(lambda role: role.name.casefold() == wanted, guild.roles)
+
+
+def request_ticket_embed(
+    *,
+    requester: discord.Member | discord.User,
+    role: discord.Role,
+    habbo_username: str,
+    request_details: str,
+    status: str = "Pending",
+) -> discord.Embed:
+    requester_name = member_display_name(requester)
+    color = discord.Color.orange() if status.casefold() == "pending" else discord.Color.green()
+    embed = discord.Embed(
+        title="Request Ticket",
+        description="A new request has been submitted.",
+        color=color,
+        timestamp=datetime.now(ZoneInfo(TIMEZONE)),
+    )
+    embed.add_field(name="Requester", value=f"{requester_name} ({requester.mention})", inline=False)
+    embed.add_field(name="Habbo Needing Request", value=habbo_username or "N/A", inline=True)
+    embed.add_field(name="Request Type", value=role.mention, inline=True)
+    embed.add_field(name="Request Details", value=request_details or "N/A", inline=False)
+    embed.add_field(name="Status", value=status, inline=True)
+    embed.set_footer(text="React with ✅ to mark this request completed.")
+    return embed
+
+
 class RankSaleModal(discord.ui.Modal, title="Log Rank Sale"):
     seller_habbo = discord.ui.TextInput(
         label="Seller Habbo Username",
@@ -242,13 +289,13 @@ class RankSaleModal(discord.ui.Modal, title="Log Rank Sale"):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
-            seller_habbo = clean_text(self.children[0].value)
-buyer = clean_text(self.children[1].value)
-rank = clean_text(self.children[2].value)
-amount = clean_text(self.children[3].value)
-proof = clean_text(self.children[4].value) or "N/A"
+            seller_habbo = clean_text(self.seller_habbo.value)
+            buyer = clean_text(self.buyer.value)
+            rank = clean_text(self.rank.value)
+            amount = clean_text(self.amount.value)
+            proof = clean_text(self.proof.value) or "N/A"
             timestamp = datetime.now(ZoneInfo(TIMEZONE)).strftime("%Y-%m-%d %I:%M %p %Z")
-            discord_seller = getattr(interaction.user, "nick", None) or getattr(interaction.user, "display_name", interaction.user.name)
+            discord_seller = member_display_name(interaction.user)
 
             row = [timestamp, discord_seller, seller_habbo, buyer, rank, amount, proof]
             await asyncio.to_thread(append_rank_sale_to_sheet, row)
@@ -277,6 +324,85 @@ proof = clean_text(self.children[4].value) or "N/A"
                 f"Could not log the rank sale: {type(exc).__name__}: {exc}",
                 ephemeral=True,
             )
+
+
+class RequestTicketModal(discord.ui.Modal, title="Request Ticket"):
+    def __init__(self, role_name: str):
+        super().__init__()
+        self.role_name = role_name
+
+    habbo_username = discord.ui.TextInput(
+        label="Habbo needing the request",
+        placeholder="Example: HabboName",
+        required=True,
+        max_length=80,
+    )
+    request_details = discord.ui.TextInput(
+        label="What is this request for?",
+        placeholder="Type the request details here...",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=1500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
+            await interaction.response.send_message("Use this in a server text channel.", ephemeral=True)
+            return
+
+        role = get_role_by_name(interaction.guild, self.role_name)
+        if role is None:
+            await interaction.response.send_message(
+                f"I could not find the @{self.role_name} role. Create that role first or check the spelling.",
+                ephemeral=True,
+            )
+            return
+
+        habbo = clean_text(self.habbo_username.value)
+        details = clean_text(self.request_details.value)
+        embed = request_ticket_embed(
+            requester=interaction.user,
+            role=role,
+            habbo_username=habbo,
+            request_details=details,
+            status="Pending",
+        )
+
+        message = await interaction.channel.send(
+            content=f"{role.mention} New request ticket submitted.",
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+        )
+        try:
+            await message.add_reaction("✅")
+        except discord.DiscordException:
+            pass
+
+        await interaction.response.send_message("Request ticket submitted.", ephemeral=True)
+
+
+class RequestRoleSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label=role_name, value=role_name, description=f"Ping @{role_name}")
+            for role_name in REQUEST_ROLE_NAMES
+        ]
+        super().__init__(
+            placeholder="Select the team that needs to be pinged",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="request_ticket_role_select",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(RequestTicketModal(self.values[0]))
+
+
+class RequestTicketPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(RequestRoleSelect())
 
 
 def staff_roles(guild: discord.Guild) -> list[discord.Role]:
@@ -385,7 +511,6 @@ def clean_rank_sales_rows(values: list[list[str]]) -> list[list[str]]:
         if not any(str(cell).strip() for cell in row):
             continue
         padded = list(row) + [""] * 12
-
         if looks_like_totals:
             continue
         if has_old_private_columns:
@@ -611,6 +736,42 @@ async def update_stats(guild: discord.Guild) -> None:
                 break
 
 
+async def user_can_complete_request_ticket(guild: discord.Guild, user_id: int, payload_member: discord.Member | None) -> bool:
+    member = payload_member
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.DiscordException:
+            return False
+
+    if member.bot:
+        return False
+    if member.guild_permissions.administrator or member.guild_permissions.manage_messages:
+        return True
+    return any(role.name in REQUEST_ROLE_NAMES for role in member.roles)
+
+
+def update_ticket_embed_to_completed(embed: discord.Embed, completed_by: discord.abc.User) -> discord.Embed:
+    embed.color = discord.Color.green()
+    status_field_found = False
+
+    for index, field in enumerate(embed.fields):
+        if field.name.casefold() == "status":
+            embed.set_field_at(index, name="Status", value="Completed", inline=field.inline)
+            status_field_found = True
+            break
+
+    if not status_field_found:
+        embed.add_field(name="Status", value="Completed", inline=True)
+
+    existing_completed_by = any(field.name.casefold() == "completed by" for field in embed.fields)
+    if not existing_completed_by:
+        embed.add_field(name="Completed By", value=completed_by.mention, inline=True)
+
+    embed.set_footer(text="Request completed.")
+    return embed
+
+
 @tasks.loop(minutes=30)
 async def stat_loop() -> None:
     for guild in bot.guilds:
@@ -620,6 +781,11 @@ async def stat_loop() -> None:
 @bot.event
 async def on_ready() -> None:
     print(f"Logged in as {bot.user} (ID: {bot.user.id if bot.user else 'unknown'})")
+
+    if not bot.request_ticket_view_loaded:
+        bot.add_view(RequestTicketPanelView())
+        bot.request_ticket_view_loaded = True
+
     if not bot.synced_commands_once:
         if TEST_GUILD_ID:
             guild_object = discord.Object(id=int(TEST_GUILD_ID))
@@ -631,13 +797,111 @@ async def on_ready() -> None:
             await bot.tree.sync()
             print("Global commands synced. Discord may take time to display them.")
         bot.synced_commands_once = True
+
     if not stat_loop.is_running():
         stat_loop.start()
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
+    if str(payload.emoji) != "✅":
+        return
+    if bot.user and payload.user_id == bot.user.id:
+        return
+    if payload.guild_id is None:
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    if guild is None:
+        return
+
+    can_complete = await user_can_complete_request_ticket(guild, payload.user_id, payload.member)
+    if not can_complete:
+        return
+
+    channel = guild.get_channel(payload.channel_id)
+    if channel is None:
+        try:
+            fetched_channel = await bot.fetch_channel(payload.channel_id)
+        except discord.DiscordException:
+            return
+        channel = fetched_channel
+
+    if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return
+
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except discord.DiscordException:
+        return
+
+    if bot.user is None or message.author.id != bot.user.id or not message.embeds:
+        return
+
+    embed = message.embeds[0]
+    if embed.title != "Request Ticket":
+        return
+
+    for field in embed.fields:
+        if field.name.casefold() == "status" and field.value.casefold() == "completed":
+            return
+
+    reactor = payload.member
+    if reactor is None:
+        try:
+            reactor = await guild.fetch_member(payload.user_id)
+        except discord.DiscordException:
+            return
+
+    updated_embed = update_ticket_embed_to_completed(embed, reactor)
+    try:
+        await message.edit(embed=updated_embed)
+    except discord.DisordException as exc:
+        print(f"Could not update request ticket status: {type(exc).__name__}: {exc}")
 
 
 @bot.tree.command(description="Check whether the bot is responding.")
 async def ping(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(f"Pong! {round(bot.latency * 1000)} ms")
+
+
+@bot.tree.command(name="requestsetup", description="Post the request ticket panel in any channel.")
+@app_commands.describe(channel="Channel where the request panel should be posted")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def requestsetup(interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Request Ticket Panel",
+        description=(
+            "Select the team that needs to be pinged, then fill out the Habbo username "
+            "and request details.\n\n"
+            "Available request types:\n"
+            "• @Badge Admin\n"
+            "• @Room Rights\n"
+            "• @Chat Moderator\n"
+            "• @Rank Seller\n"
+            "• @Portal Admin"
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="Requests start as Pending and turn Completed when staff reacts with ✅.")
+
+    try:
+        panel_message = await channel.send(embed=embed, view=RequestTicketPanelView())
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "I cannot send messages in that channel. Give me View Channel and Send Messages.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"Request ticket panel posted in {channel.mention}: {panel_message.jump_url}",
+        ephemeral=True,
+    )
 
 
 sale_group = app_commands.Group(name="sale", description="Rank sale tools.")
