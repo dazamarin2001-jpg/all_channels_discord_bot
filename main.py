@@ -1,13 +1,18 @@
 """Railway entrypoint for the Discord bot.
 
-This keeps startup safe while adding the cleanup command if bot.py does not
-already contain it. It does not touch the rank sale modal.
+Adds the clean-up crew commands safely without touching the rank-sale modal.
+It also removes any previously injected cleanup block first, so a broken runtime
+injection can repair itself on the next deploy/restart.
 """
 
 from pathlib import Path
 
 
-CLEANUP_BLOCK = '''
+START_MARKER = "# ---- Cleanup crew commands ----"
+END_MARKER = "# ---- End cleanup crew commands ----"
+
+
+CLEANUP_BLOCK = r'''
 # ---- Cleanup crew commands ----
 CLEANUP_CHANNELS_FILE = os.getenv("CLEANUP_CHANNELS_FILE", "cleanup_channels.json")
 EXTRA_CLEANUP_CHANNEL_IDS: set[int] = set()
@@ -269,16 +274,39 @@ bot.tree.add_command(cleanup_group)
 '''
 
 
+def remove_cleanup_block(text: str) -> str:
+    while START_MARKER in text:
+        start = text.find(START_MARKER)
+        block_start = text.rfind("\n", 0, start)
+        if block_start == -1:
+            block_start = start
+        end = text.find(END_MARKER, start)
+        if end == -1:
+            # Broken old injection: remove from the marker down to bot.run(TOKEN), then re-add bot.run.
+            run_marker = "bot.run(TOKEN)"
+            run_pos = text.find(run_marker, start)
+            if run_pos == -1:
+                return text[:block_start].rstrip() + "\n"
+            text = text[:block_start].rstrip() + "\n\n" + text[run_pos:]
+            continue
+        line_end = text.find("\n", end + len(END_MARKER))
+        if line_end == -1:
+            line_end = len(text)
+        text = text[:block_start].rstrip() + "\n" + text[line_end:].lstrip("\n")
+    return text
+
+
 path = Path("bot.py")
 if path.exists():
     text = path.read_text(encoding="utf-8")
-    if "cleanup_group = app_commands.Group" not in text:
-        marker = "\n\nbot.run(TOKEN)"
-        if marker in text:
-            text = text.replace(marker, "\n\n" + CLEANUP_BLOCK.strip() + marker, 1)
-            path.write_text(text, encoding="utf-8")
-            print("Cleanup crew commands injected into bot.py.")
-        else:
-            print("Cleanup command warning: could not find bot.run(TOKEN) marker.")
+    text = remove_cleanup_block(text)
+
+    marker = "\n\nbot.run(TOKEN)"
+    if marker in text:
+        text = text.replace(marker, "\n\n" + CLEANUP_BLOCK.strip() + marker, 1)
+        path.write_text(text, encoding="utf-8")
+        print("Cleanup crew commands injected into bot.py.")
+    else:
+        print("Cleanup command warning: could not find bot.run(TOKEN) marker.")
 
 import bot
