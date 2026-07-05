@@ -1,18 +1,16 @@
 """Railway entrypoint for the Discord bot.
 
 Adds optional generated commands safely without touching the rank-sale modal.
-It removes any previously injected generated blocks first, so a broken runtime
-injection can repair itself on the next deploy/restart.
+It removes previously injected generated blocks first, so runtime injections can
+repair themselves on the next deploy/restart.
 """
 
 from pathlib import Path
-
 
 DONATION_START_MARKER = "# ---- Donation commands ----"
 DONATION_END_MARKER = "# ---- End donation commands ----"
 CLEANUP_START_MARKER = "# ---- Cleanup crew commands ----"
 CLEANUP_END_MARKER = "# ---- End cleanup crew commands ----"
-
 
 DONATION_BLOCK = r'''
 # ---- Donation commands ----
@@ -77,25 +75,9 @@ async def get_donation_channel(guild: discord.Guild | None):
 
 
 class DonationModal(discord.ui.Modal, title="Log Donation"):
-    donor = discord.ui.TextInput(
-        label="Donor Habbo Username",
-        placeholder="Example: DonorName",
-        required=True,
-        max_length=80,
-    )
-    amount = discord.ui.TextInput(
-        label="Donation Amount",
-        placeholder="Example: 50c, 1 GB, HC, furni",
-        required=True,
-        max_length=80,
-    )
-    proof = discord.ui.TextInput(
-        label="Proof / Notes",
-        placeholder="Paste proof link or add notes",
-        style=discord.TextStyle.paragraph,
-        required=False,
-        max_length=1000,
-    )
+    donor = discord.ui.TextInput(label="Donor Habbo Username", placeholder="Example: DonorName", required=True, max_length=80)
+    amount = discord.ui.TextInput(label="Donation Amount", placeholder="Example: 50c, 1 GB, HC, furni", required=True, max_length=80)
+    proof = discord.ui.TextInput(label="Proof / Notes", placeholder="Paste proof link or add notes", style=discord.TextStyle.paragraph, required=False, max_length=1000)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -104,14 +86,9 @@ class DonationModal(discord.ui.Modal, title="Log Donation"):
             amount = clean_text(self.amount.value)
             proof = clean_text(self.proof.value) or "N/A"
             logged_by = member_display_name(interaction.user)
-
             await asyncio.to_thread(append_donation_to_sheet, [logged_by, donor, amount, proof])
 
-            embed = discord.Embed(
-                title="Donation Logged",
-                color=discord.Color.gold(),
-                timestamp=datetime.now(ZoneInfo(TIMEZONE)),
-            )
+            embed = discord.Embed(title="Donation Logged", color=discord.Color.gold(), timestamp=datetime.now(ZoneInfo(TIMEZONE)))
             embed.add_field(name="Logged By", value=interaction.user.mention, inline=True)
             embed.add_field(name="Donor", value=donor, inline=True)
             embed.add_field(name="Amount", value=amount, inline=True)
@@ -121,7 +98,6 @@ class DonationModal(discord.ui.Modal, title="Log Donation"):
             if log_channel is None:
                 raise RuntimeError("DONATION_CHANNEL_ID is missing, wrong, or the bot cannot see that channel.")
             await log_channel.send(embed=embed)
-
             await interaction.followup.send("Donation logged and sent to the donation channel.", ephemeral=True)
         except Exception as exc:
             print(f"Donation logging error: {type(exc).__name__}: {exc}")
@@ -137,10 +113,7 @@ async def donate(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("You do not have permission to log donations.", ephemeral=True)
         return
     if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
-        await interaction.response.send_message(
-            "Donation logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.",
-            ephemeral=True,
-        )
+        await interaction.response.send_message("Donation logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.", ephemeral=True)
         return
     if not DONATION_CHANNEL_ID:
         await interaction.response.send_message("Add DONATION_CHANNEL_ID in Railway Variables first.", ephemeral=True)
@@ -161,21 +134,16 @@ async def setup_donations_sheet(interaction: discord.Interaction) -> None:
 # ---- End donation commands ----
 '''
 
-
 CLEANUP_BLOCK = r'''
 # ---- Cleanup crew commands ----
 CLEANUP_CHANNELS_FILE = os.getenv("CLEANUP_CHANNELS_FILE", "cleanup_channels.json")
 EXTRA_CLEANUP_CHANNEL_IDS: set[int] = set()
+CLEANUP_DELETE_DELAY_SECONDS = 120
 
 
 def get_static_cleanup_channel_ids() -> set[int]:
     ids: set[int] = set()
-    raw_values = [
-        os.getenv("AUTO_CLEAN_CHANNEL_ID"),
-        os.getenv("AUTO_CLEAN_CHANNEL_IDS"),
-        RANK_SALES_CHANNEL_ID,
-        globals().get("DONATION_CHANNEL_ID"),
-    ]
+    raw_values = [os.getenv("AUTO_CLEAN_CHANNEL_ID"), os.getenv("AUTO_CLEAN_CHANNEL_IDS"), RANK_SALES_CHANNEL_ID, globals().get("DONATION_CHANNEL_ID")]
     for raw_value in raw_values:
         if not raw_value:
             continue
@@ -245,9 +213,7 @@ async def cleanup_existing_non_logs_in_channel(channel, history_limit: int | Non
 
     deleted = 0
     async for message in channel.history(limit=history_limit):
-        if getattr(message, "pinned", False):
-            continue
-        if is_cleanup_log_message(message):
+        if getattr(message, "pinned", False) or is_cleanup_log_message(message):
             continue
         try:
             await message.delete()
@@ -280,20 +246,15 @@ async def cleanup_enable(interaction: discord.Interaction, channel: discord.Text
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
-
     target = channel or interaction.channel
     if not isinstance(target, (discord.TextChannel, discord.Thread)):
         await interaction.response.send_message("Use this in a text channel or pick a text channel.", ephemeral=True)
         return
-
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         await asyncio.to_thread(add_cleanup_channel, target.id)
         deleted = await cleanup_existing_non_logs_in_channel(target)
-        await interaction.followup.send(
-            f"🧹 Clean-up crew enabled in {target.mention}. I also removed {deleted} old non-log message(s).",
-            ephemeral=True,
-        )
+        await interaction.followup.send(f"🧹 Clean-up crew enabled in {target.mention}. I also removed {deleted} old non-log message(s).", ephemeral=True)
     except Exception as exc:
         print(f"Cleanup enable error: {type(exc).__name__}: {exc}")
         await interaction.followup.send(f"Could not enable cleanup: {type(exc).__name__}: {exc}", ephemeral=True)
@@ -306,20 +267,15 @@ async def cleanup_disable(interaction: discord.Interaction, channel: discord.Tex
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
-
     target = channel or interaction.channel
     if not isinstance(target, (discord.TextChannel, discord.Thread)):
         await interaction.response.send_message("Use this in a text channel or pick a text channel.", ephemeral=True)
         return
-
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         removed = await asyncio.to_thread(remove_cleanup_channel, target.id)
         if target.id in get_static_cleanup_channel_ids():
-            await interaction.followup.send(
-                f"{target.mention} is still cleaned because it is set in Railway Variables. Remove it from the variable to fully disable it.",
-                ephemeral=True,
-            )
+            await interaction.followup.send(f"{target.mention} is still cleaned because it is set in Railway Variables. Remove it from the variable to fully disable it.", ephemeral=True)
         elif removed:
             await interaction.followup.send(f"🧹 Clean-up crew disabled in {target.mention}.", ephemeral=True)
         else:
@@ -335,7 +291,6 @@ async def cleanup_list(interaction: discord.Interaction) -> None:
     if interaction.guild is None:
         await interaction.response.send_message("Use this command in a server.", ephemeral=True)
         return
-
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         await asyncio.to_thread(load_extra_cleanup_channel_ids_from_file)
@@ -343,7 +298,6 @@ async def cleanup_list(interaction: discord.Interaction) -> None:
         if not ids:
             await interaction.followup.send("No cleanup channels are enabled yet.", ephemeral=True)
             return
-
         lines = []
         for channel_id in ids[:25]:
             channel = interaction.guild.get_channel(channel_id)
@@ -358,25 +312,20 @@ async def cleanup_list(interaction: discord.Interaction) -> None:
 async def auto_cleanup_on_message(message: discord.Message) -> None:
     if message.guild is None:
         return
-
     await asyncio.to_thread(load_extra_cleanup_channel_ids_from_file)
     if message.channel.id not in get_all_cleanup_channel_ids():
         return
-    if getattr(message, "pinned", False):
-        return
-    if is_cleanup_log_message(message):
+    if getattr(message, "pinned", False) or is_cleanup_log_message(message):
         return
 
     warning = None
     if not message.author.bot and message.webhook_id is None:
         try:
-            warning = await message.channel.send(
-                "🧹 **Clean-up crew is here!** This channel is for logs only. Non-log messages will be swept away in **10 seconds**."
-            )
+            warning = await message.channel.send("🧹 **Clean-up crew is here!** This channel is for logs only. Non-log messages will be swept away in **2 minutes**.")
         except discord.HTTPException:
             warning = None
 
-    await asyncio.sleep(10)
+    await asyncio.sleep(CLEANUP_DELETE_DELAY_SECONDS)
     try:
         current_message = await message.channel.fetch_message(message.id)
         if is_cleanup_log_message(current_message) or getattr(current_message, "pinned", False):
@@ -402,7 +351,6 @@ async def clean_existing_cleanup_channel_messages() -> None:
     if _cleanup_startup_done:
         return
     _cleanup_startup_done = True
-
     await asyncio.to_thread(load_extra_cleanup_channel_ids_from_file)
     for cleanup_channel_id in get_all_cleanup_channel_ids():
         channel = bot.get_channel(cleanup_channel_id)
