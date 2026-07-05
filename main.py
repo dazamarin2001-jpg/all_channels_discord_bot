@@ -1,15 +1,165 @@
 """Railway entrypoint for the Discord bot.
 
-Adds the clean-up crew commands safely without touching the rank-sale modal.
-It also removes any previously injected cleanup block first, so a broken runtime
+Adds optional generated commands safely without touching the rank-sale modal.
+It removes any previously injected generated blocks first, so a broken runtime
 injection can repair itself on the next deploy/restart.
 """
 
 from pathlib import Path
 
 
-START_MARKER = "# ---- Cleanup crew commands ----"
-END_MARKER = "# ---- End cleanup crew commands ----"
+DONATION_START_MARKER = "# ---- Donation commands ----"
+DONATION_END_MARKER = "# ---- End donation commands ----"
+CLEANUP_START_MARKER = "# ---- Cleanup crew commands ----"
+CLEANUP_END_MARKER = "# ---- End cleanup crew commands ----"
+
+
+DONATION_BLOCK = r'''
+# ---- Donation commands ----
+DONATIONS_SHEET_NAME = os.getenv("DONATIONS_SHEET_NAME", "Donations")
+DONATION_CHANNEL_ID = os.getenv("DONATION_CHANNEL_ID") or os.getenv("DONATIONS_CHANNEL_ID")
+DONATIONS_HEADERS = ["Logged By", "Donor Habbo", "Amount", "Proof / Notes"]
+
+
+def get_donations_worksheet(spreadsheet=None):
+    spreadsheet = spreadsheet or get_spreadsheet()
+    return get_or_create_worksheet(spreadsheet, DONATIONS_SHEET_NAME, DONATIONS_HEADERS)
+
+
+def setup_donations_sheet_layout() -> None:
+    spreadsheet = get_spreadsheet()
+    sheet = get_donations_worksheet(spreadsheet)
+    values = sheet.get_all_values()
+    cleaned = [DONATIONS_HEADERS]
+    if values:
+        for row in values[1:]:
+            if any(str(cell).strip() for cell in row):
+                padded = list(row) + [""] * len(DONATIONS_HEADERS)
+                cleaned.append(padded[:len(DONATIONS_HEADERS)])
+    sheet.clear()
+    sheet.update(range_name="A1", values=cleaned, value_input_option="USER_ENTERED")
+    try:
+        sheet.batch_clear(["E:Z"])
+    except Exception:
+        pass
+    apply_sales_sheet_style(sheet, len(DONATIONS_HEADERS))
+
+
+def append_donation_to_sheet(row: list[str]) -> None:
+    spreadsheet = get_spreadsheet()
+    sheet = get_donations_worksheet(spreadsheet)
+    values = sheet.get_all_values()
+    current_header = values[0][:len(DONATIONS_HEADERS)] if values else []
+    if current_header != DONATIONS_HEADERS:
+        setup_donations_sheet_layout()
+        spreadsheet = get_spreadsheet()
+        sheet = get_donations_worksheet(spreadsheet)
+    sheet.append_row(row, value_input_option="USER_ENTERED")
+    apply_sales_sheet_style(sheet, len(DONATIONS_HEADERS))
+
+
+async def get_donation_channel(guild: discord.Guild | None):
+    if guild is None or not DONATION_CHANNEL_ID:
+        return None
+    try:
+        channel_id = int(DONATION_CHANNEL_ID)
+    except ValueError:
+        return None
+    channel = guild.get_channel(channel_id) or bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except discord.DiscordException:
+            return None
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel
+    return None
+
+
+class DonationModal(discord.ui.Modal, title="Log Donation"):
+    donor = discord.ui.TextInput(
+        label="Donor Habbo Username",
+        placeholder="Example: DonorName",
+        required=True,
+        max_length=80,
+    )
+    amount = discord.ui.TextInput(
+        label="Donation Amount",
+        placeholder="Example: 50c, 1 GB, HC, furni",
+        required=True,
+        max_length=80,
+    )
+    proof = discord.ui.TextInput(
+        label="Proof / Notes",
+        placeholder="Paste proof link or add notes",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            donor = clean_text(self.donor.value)
+            amount = clean_text(self.amount.value)
+            proof = clean_text(self.proof.value) or "N/A"
+            logged_by = member_display_name(interaction.user)
+
+            await asyncio.to_thread(append_donation_to_sheet, [logged_by, donor, amount, proof])
+
+            embed = discord.Embed(
+                title="Donation Logged",
+                color=discord.Color.gold(),
+                timestamp=datetime.now(ZoneInfo(TIMEZONE)),
+            )
+            embed.add_field(name="Logged By", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Donor", value=donor, inline=True)
+            embed.add_field(name="Amount", value=amount, inline=True)
+            embed.add_field(name="Proof / Notes", value=proof, inline=False)
+
+            log_channel = await get_donation_channel(interaction.guild)
+            if log_channel is None:
+                raise RuntimeError("DONATION_CHANNEL_ID is missing, wrong, or the bot cannot see that channel.")
+            await log_channel.send(embed=embed)
+
+            await interaction.followup.send("Donation logged and sent to the donation channel.", ephemeral=True)
+        except Exception as exc:
+            print(f"Donation logging error: {type(exc).__name__}: {exc}")
+            await interaction.followup.send(f"Could not log donation: {type(exc).__name__}: {exc}", ephemeral=True)
+
+
+@bot.tree.command(name="donate", description="Open a form to log a donation into Google Sheets.")
+async def donate(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        return
+    if not await member_can_log_sales(interaction):
+        await interaction.response.send_message("You do not have permission to log donations.", ephemeral=True)
+        return
+    if not SPREADSHEET_ID or not GOOGLE_CREDENTIALS_JSON:
+        await interaction.response.send_message(
+            "Donation logging is not configured yet. Add SPREADSHEET_ID and GOOGLE_CREDENTIALS_JSON in Railway Variables.",
+            ephemeral=True,
+        )
+        return
+    if not DONATION_CHANNEL_ID:
+        await interaction.response.send_message("Add DONATION_CHANNEL_ID in Railway Variables first.", ephemeral=True)
+        return
+    await interaction.response.send_modal(DonationModal())
+
+
+@bot.tree.command(name="setup-donations-sheet", description="Create, clean, and style the Donations Google Sheet tab.")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_donations_sheet(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await asyncio.to_thread(setup_donations_sheet_layout)
+        await interaction.followup.send("Donations sheet tab was created, cleaned, and styled.", ephemeral=True)
+    except Exception as exc:
+        print(f"Donations sheet setup error: {type(exc).__name__}: {exc}")
+        await interaction.followup.send(f"Could not setup donations sheet: {type(exc).__name__}: {exc}", ephemeral=True)
+# ---- End donation commands ----
+'''
 
 
 CLEANUP_BLOCK = r'''
@@ -82,7 +232,6 @@ def remove_cleanup_channel(channel_id: int) -> bool:
 
 
 def is_cleanup_log_message(candidate: discord.Message) -> bool:
-    # Keep bot/webhook embeds, such as sale logs, donation logs, and ticket embeds.
     return bool(candidate.embeds) and (candidate.author.bot or candidate.webhook_id is not None)
 
 
@@ -274,22 +423,21 @@ bot.tree.add_command(cleanup_group)
 '''
 
 
-def remove_cleanup_block(text: str) -> str:
-    while START_MARKER in text:
-        start = text.find(START_MARKER)
+def remove_marked_block(text: str, start_marker: str, end_marker: str) -> str:
+    while start_marker in text:
+        start = text.find(start_marker)
         block_start = text.rfind("\n", 0, start)
         if block_start == -1:
             block_start = start
-        end = text.find(END_MARKER, start)
+        end = text.find(end_marker, start)
         if end == -1:
-            # Broken old injection: remove from the marker down to bot.run(TOKEN), then re-add bot.run.
             run_marker = "bot.run(TOKEN)"
             run_pos = text.find(run_marker, start)
             if run_pos == -1:
                 return text[:block_start].rstrip() + "\n"
             text = text[:block_start].rstrip() + "\n\n" + text[run_pos:]
             continue
-        line_end = text.find("\n", end + len(END_MARKER))
+        line_end = text.find("\n", end + len(end_marker))
         if line_end == -1:
             line_end = len(text)
         text = text[:block_start].rstrip() + "\n" + text[line_end:].lstrip("\n")
@@ -299,14 +447,16 @@ def remove_cleanup_block(text: str) -> str:
 path = Path("bot.py")
 if path.exists():
     text = path.read_text(encoding="utf-8")
-    text = remove_cleanup_block(text)
+    text = remove_marked_block(text, DONATION_START_MARKER, DONATION_END_MARKER)
+    text = remove_marked_block(text, CLEANUP_START_MARKER, CLEANUP_END_MARKER)
 
     marker = "\n\nbot.run(TOKEN)"
     if marker in text:
-        text = text.replace(marker, "\n\n" + CLEANUP_BLOCK.strip() + marker, 1)
+        injected = DONATION_BLOCK.strip() + "\n\n" + CLEANUP_BLOCK.strip()
+        text = text.replace(marker, "\n\n" + injected + marker, 1)
         path.write_text(text, encoding="utf-8")
-        print("Cleanup crew commands injected into bot.py.")
+        print("Donation and cleanup commands injected into bot.py.")
     else:
-        print("Cleanup command warning: could not find bot.run(TOKEN) marker.")
+        print("Generated command warning: could not find bot.run(TOKEN) marker.")
 
 import bot
