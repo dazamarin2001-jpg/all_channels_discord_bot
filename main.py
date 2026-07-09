@@ -18,11 +18,50 @@ DONATION_BLOCK = r"""
 DONATIONS_SHEET_NAME = os.getenv("DONATIONS_SHEET_NAME", "Donations")
 DONATION_CHANNEL_ID = os.getenv("DONATION_CHANNEL_ID") or os.getenv("DONATIONS_CHANNEL_ID")
 DONATIONS_HEADERS = ["Logged By", "Donor Habbo", "Amount", "Proof / Notes"]
+DONATIONS_RECEIVED_HEADER = "Donations Received"
 
 
 def get_donations_worksheet(spreadsheet=None):
     spreadsheet = spreadsheet or get_spreadsheet()
     return get_or_create_worksheet(spreadsheet, DONATIONS_SHEET_NAME, DONATIONS_HEADERS)
+
+
+def ensure_donations_received_column(totals_sheet=None):
+    spreadsheet = None
+    if totals_sheet is None:
+        spreadsheet = get_spreadsheet()
+        totals_sheet = get_rank_seller_totals_worksheet(spreadsheet)
+    values = totals_sheet.get_all_values()
+    header = values[0] if values else []
+    if len(header) < 7 or clean_text(header[6]).casefold() != DONATIONS_RECEIVED_HEADER.casefold():
+        totals_sheet.update(range_name="G1", values=[[DONATIONS_RECEIVED_HEADER]], value_input_option="USER_ENTERED")
+    return totals_sheet
+
+
+def add_donation_to_sale_summary(account: str, amount_text: str) -> tuple[str, str]:
+    amount_value = amount_to_credits(amount_text)
+    if amount_value is None or amount_value <= 0:
+        return "N/A", "N/A"
+
+    spreadsheet = get_spreadsheet()
+    totals_sheet = ensure_donations_received_column(get_rank_seller_totals_worksheet(spreadsheet))
+    values = totals_sheet.get_all_values()
+    target_account = norm(account)
+
+    for index, row in enumerate(values[1:] if len(values) > 1 else [], start=2):
+        padded = list(row) + [""] * 7
+        if norm(padded[0]) != target_account:
+            continue
+        previous_donations = amount_to_credits(padded[6]) or 0.0
+        new_donations = previous_donations + amount_value
+        totals_sheet.update(range_name=f"G{index}:G{index}", values=[[format_credits(new_donations)]], value_input_option="USER_ENTERED")
+        apply_sales_sheet_style(totals_sheet, 7)
+        return format_credits(previous_donations), format_credits(new_donations)
+
+    new_row = [account, "N/A", 0, "0c", "N/A", "N/A", format_credits(amount_value)]
+    totals_sheet.append_row(new_row, value_input_option="USER_ENTERED")
+    apply_sales_sheet_style(totals_sheet, 7)
+    return "0c", format_credits(amount_value)
 
 
 def setup_donations_sheet_layout() -> None:
@@ -42,6 +81,7 @@ def setup_donations_sheet_layout() -> None:
     except Exception:
         pass
     apply_sales_sheet_style(sheet, len(DONATIONS_HEADERS))
+    ensure_donations_received_column()
 
 
 def append_donation_to_sheet(row: list[str]) -> None:
@@ -88,18 +128,21 @@ class DonationModal(discord.ui.Modal, title="Log Donation"):
             proof = clean_text(self.proof.value) or "N/A"
             logged_by = member_display_name(interaction.user)
             await asyncio.to_thread(append_donation_to_sheet, [logged_by, donor, amount, proof])
+            old_donations, new_donations = await asyncio.to_thread(add_donation_to_sale_summary, logged_by, amount)
 
             embed = discord.Embed(title="Donation Logged", color=discord.Color.gold(), timestamp=datetime.now(ZoneInfo(TIMEZONE)))
             embed.add_field(name="Logged By", value=interaction.user.mention, inline=True)
             embed.add_field(name="Donor", value=donor, inline=True)
             embed.add_field(name="Amount", value=amount, inline=True)
             embed.add_field(name="Proof / Notes", value=proof, inline=False)
+            embed.add_field(name="Previous Donations", value=old_donations, inline=True)
+            embed.add_field(name="New Donations Total", value=new_donations, inline=True)
 
             log_channel = await get_donation_channel(interaction.guild)
             if log_channel is None:
                 raise RuntimeError("DONATION_CHANNEL_ID is missing, wrong, or the bot cannot see that channel.")
             await log_channel.send(embed=embed)
-            await interaction.followup.send("Donation logged and sent to the donation channel.", ephemeral=True)
+            await interaction.followup.send("Donation logged, added to /sale summary, and sent to the donation channel.", ephemeral=True)
         except Exception as exc:
             print(f"Donation logging error: {type(exc).__name__}: {exc}")
             await interaction.followup.send(f"Could not log donation: {type(exc).__name__}: {exc}", ephemeral=True)
@@ -128,7 +171,7 @@ async def setup_donations_sheet(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         await asyncio.to_thread(setup_donations_sheet_layout)
-        await interaction.followup.send("Donations sheet tab was created, cleaned, and styled.", ephemeral=True)
+        await interaction.followup.send("Donations sheet tab was created, cleaned, styled, and connected to /sale summary.", ephemeral=True)
     except Exception as exc:
         print(f"Donations sheet setup error: {type(exc).__name__}: {exc}")
         await interaction.followup.send(f"Could not setup donations sheet: {type(exc).__name__}: {exc}", ephemeral=True)
@@ -377,6 +420,7 @@ TRADE_SUMMARY_SHEET_NAME = os.getenv("TRADE_SUMMARY_SHEET_NAME", "Summary Log")
 TRADE_LOG_CHANNEL_ID = os.getenv("TRADE_LOG_CHANNEL_ID", "1524583834660638800")
 TRADE_SUMMARY_HEADERS = ["Account", "Category", "Action", "Change", "Traded To", "Status"]
 TRADE_ALLOWED_ROLE_NAMES = {"rank sellers", "rank seller", "chat moderator"}
+DONATIONS_RECEIVED_HEADER = globals().get("DONATIONS_RECEIVED_HEADER", "Donations Received")
 
 
 def protect_sheet_value(value: object) -> str:
@@ -400,36 +444,52 @@ def setup_trade_summary_sheet_layout() -> None:
     apply_sales_sheet_style(sheet, len(TRADE_SUMMARY_HEADERS))
 
 
-def read_trade_account_balance(spreadsheet, account: str) -> tuple[object, int, float]:
-    totals_sheet = get_rank_seller_totals_worksheet(spreadsheet)
+def ensure_donations_received_column_for_trades(totals_sheet=None):
+    if "ensure_donations_received_column" in globals():
+        return ensure_donations_received_column(totals_sheet)
+    if totals_sheet is None:
+        spreadsheet = get_spreadsheet()
+        totals_sheet = get_rank_seller_totals_worksheet(spreadsheet)
+    values = totals_sheet.get_all_values()
+    header = values[0] if values else []
+    if len(header) < 7 or clean_text(header[6]).casefold() != DONATIONS_RECEIVED_HEADER.casefold():
+        totals_sheet.update(range_name="G1", values=[[DONATIONS_RECEIVED_HEADER]], value_input_option="USER_ENTERED")
+    return totals_sheet
+
+
+def read_trade_account_balance(spreadsheet, account: str, category: str) -> tuple[object, int, str, float]:
+    totals_sheet = ensure_donations_received_column_for_trades(get_rank_seller_totals_worksheet(spreadsheet))
     values = totals_sheet.get_all_values()
     target_account = norm(account)
+    category_key = category.casefold()
+    balance_index = 6 if category_key == "donation" else 3
+    balance_col = "G" if category_key == "donation" else "D"
 
     for index, row in enumerate(values[1:] if len(values) > 1 else [], start=2):
-        padded = list(row) + [""] * len(RANK_SELLER_TOTALS_HEADERS)
+        padded = list(row) + [""] * 7
         if norm(padded[0]) != target_account:
             continue
-        current_balance = amount_to_credits(padded[3]) or 0.0
-        return totals_sheet, index, current_balance
+        current_balance = amount_to_credits(padded[balance_index]) or 0.0
+        return totals_sheet, index, balance_col, current_balance
 
-    raise RuntimeError(f"No Rank Seller Totals row was found for {account}. Log a sale first, then try /trade again.")
+    raise RuntimeError(f"No Rank Seller Totals row was found for {account}. Log a sale or donation first, then try /trade again.")
 
 
-def apply_trade_to_sales_summary(account: str, amount: float) -> tuple[str, str]:
+def apply_trade_to_sales_summary(account: str, category: str, amount: float) -> tuple[str, str, str]:
     spreadsheet = get_spreadsheet()
-    totals_sheet, row_index, current_balance = read_trade_account_balance(spreadsheet, account)
+    totals_sheet, row_index, balance_col, current_balance = read_trade_account_balance(spreadsheet, account, category)
 
     if current_balance < amount:
-        raise RuntimeError(f"{account} only has {format_credits(current_balance)} available.")
+        raise RuntimeError(f"{account} only has {format_credits(current_balance)} available in {category} funds.")
 
     new_balance = current_balance - amount
     totals_sheet.update(
-        range_name=f"D{row_index}:D{row_index}",
+        range_name=f"{balance_col}{row_index}:{balance_col}{row_index}",
         values=[[format_credits(new_balance)]],
         value_input_option="USER_ENTERED",
     )
-    apply_sales_sheet_style(totals_sheet, len(RANK_SELLER_TOTALS_HEADERS))
-    return format_credits(current_balance), format_credits(new_balance)
+    apply_sales_sheet_style(totals_sheet, 7)
+    return balance_col, format_credits(current_balance), format_credits(new_balance)
 
 
 def append_trade_to_summary_log(row: list[object]) -> None:
@@ -442,6 +502,74 @@ def append_trade_to_summary_log(row: list[object]) -> None:
         sheet = get_trade_summary_worksheet(spreadsheet)
     sheet.append_row(row, value_input_option="USER_ENTERED")
     apply_sales_sheet_style(sheet, len(TRADE_SUMMARY_HEADERS))
+
+
+def credits_sum(*values: object) -> float:
+    total = 0.0
+    for value in values:
+        total += amount_to_credits(value) or 0.0
+    return total
+
+
+async def sale_summary_with_donations(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        worksheet = ensure_donations_received_column_for_trades(get_rank_seller_totals_worksheet())
+        values = await asyncio.to_thread(worksheet.get_all_values)
+        rows = values[1:] if len(values) > 1 else []
+        if not rows:
+            await interaction.followup.send("No rank seller totals have been synced yet.", ephemeral=True)
+            return
+
+        parsed_rows = []
+        for row in rows:
+            padded = list(row) + [""] * 7
+            discord_username = clean_text(padded[0])
+            sales_count = clean_text(padded[2]) or "0"
+            sales_amount = clean_text(padded[3]) or "0c"
+            donations_received = clean_text(padded[6]) or "0c"
+            if not discord_username:
+                continue
+            current_funds = credits_sum(sales_amount, donations_received)
+            try:
+                sort_sales = int(float(sales_count))
+            except ValueError:
+                sort_sales = 0
+            parsed_rows.append((current_funds, sort_sales, discord_username, sales_count, sales_amount, donations_received))
+
+        parsed_rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        lines = []
+        for rank_number, (current_funds, _sort_sales, discord_username, sales_count, sales_amount, donations_received) in enumerate(parsed_rows[:10], start=1):
+            sale_word = "sale" if str(sales_count).strip() == "1" else "sales"
+            lines.append(
+                f"{rank_number}.  **{discord_username}**\n"
+                f"— Sales: {sales_count} {sale_word} — {sales_amount}\n"
+                f"— Donations Received: {donations_received}\n"
+                f"— Current Funds: {format_credits(current_funds)}"
+            )
+
+        if not lines:
+            await interaction.followup.send("No Discord usernames found in Rank Seller Totals.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="Rank Seller Totals",
+            description="\n\n".join(lines),
+            color=discord.Color.purple(),
+            timestamp=datetime.now(ZoneInfo(TIMEZONE)),
+        )
+        embed.set_footer(text="Sales + Donations Received, minus logged trades")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as exc:
+        print(f"Rank sales summary error: {type(exc).__name__}: {exc}")
+        await interaction.followup.send(f"Could not load sales summary: {type(exc).__name__}: {exc}", ephemeral=True)
+
+
+try:
+    sale_group.remove_command("summary")
+except Exception:
+    pass
+sale_group.command(name="summary", description="Show sales, donations received, and current funds.")(sale_summary_with_donations)
 
 
 async def get_trade_log_channel(guild: discord.Guild | None):
@@ -511,7 +639,7 @@ class TradeModal(discord.ui.Modal, title="Log Trade"):
             traded_to = protect_sheet_value(self.traded_to.value)
             negative_change = -int(amount_value) if float(amount_value).is_integer() else -amount_value
 
-            old_balance, new_balance = await asyncio.to_thread(apply_trade_to_sales_summary, account, amount_value)
+            _balance_col, old_balance, new_balance = await asyncio.to_thread(apply_trade_to_sales_summary, account, category, amount_value)
             await asyncio.to_thread(
                 append_trade_to_summary_log,
                 [account, category, "Trade Out", negative_change, traded_to, "Completed"],
@@ -526,8 +654,8 @@ class TradeModal(discord.ui.Modal, title="Log Trade"):
             embed.add_field(name="Category", value=category, inline=True)
             embed.add_field(name="Amount", value=format_credits(amount_value), inline=True)
             embed.add_field(name="Traded To", value=traded_to, inline=True)
-            embed.add_field(name="Previous Balance", value=old_balance, inline=True)
-            embed.add_field(name="New Balance", value=new_balance, inline=True)
+            embed.add_field(name="Previous Category Balance", value=old_balance, inline=True)
+            embed.add_field(name="New Category Balance", value=new_balance, inline=True)
             embed.set_footer(text="Logged to Summary Log and applied to /sale summary totals.")
 
             log_channel = await get_trade_log_channel(interaction.guild)
