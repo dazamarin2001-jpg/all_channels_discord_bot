@@ -374,6 +374,7 @@ bot.tree.add_command(cleanup_group)
 TRADE_BLOCK = r"""
 # ---- Trade commands ----
 TRADE_SUMMARY_SHEET_NAME = os.getenv("TRADE_SUMMARY_SHEET_NAME", "Summary Log")
+TRADE_LOG_CHANNEL_ID = os.getenv("TRADE_LOG_CHANNEL_ID", "1524583834660638800")
 TRADE_SUMMARY_HEADERS = ["Account", "Category", "Action", "Change", "Traded To", "Status"]
 TRADE_ALLOWED_ROLE_NAMES = {"rank sellers", "rank seller", "chat moderator"}
 
@@ -443,6 +444,24 @@ def append_trade_to_summary_log(row: list[object]) -> None:
     apply_sales_sheet_style(sheet, len(TRADE_SUMMARY_HEADERS))
 
 
+async def get_trade_log_channel(guild: discord.Guild | None):
+    if guild is None or not TRADE_LOG_CHANNEL_ID:
+        return None
+    try:
+        channel_id = int(TRADE_LOG_CHANNEL_ID)
+    except ValueError:
+        return None
+    channel = guild.get_channel(channel_id) or bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except discord.DiscordException:
+            return None
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel
+    return None
+
+
 async def member_can_trade(interaction: discord.Interaction) -> bool:
     if interaction.guild is None:
         return False
@@ -510,7 +529,25 @@ class TradeModal(discord.ui.Modal, title="Log Trade"):
             embed.add_field(name="Previous Balance", value=old_balance, inline=True)
             embed.add_field(name="New Balance", value=new_balance, inline=True)
             embed.set_footer(text="Logged to Summary Log and applied to /sale summary totals.")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+
+            log_channel = await get_trade_log_channel(interaction.guild)
+            if log_channel is not None:
+                try:
+                    await log_channel.send(embed=embed)
+                    await interaction.followup.send(f"Trade logged and sent to {log_channel.mention}.", embed=embed, ephemeral=True)
+                except discord.DiscordException as log_exc:
+                    print(f"Trade channel send error: {type(log_exc).__name__}: {log_exc}")
+                    await interaction.followup.send(
+                        "Trade logged, but I could not send it to the trade log channel. Check my channel permissions.",
+                        embed=embed,
+                        ephemeral=True,
+                    )
+            else:
+                await interaction.followup.send(
+                    "Trade logged, but I could not find the trade log channel. Check TRADE_LOG_CHANNEL_ID.",
+                    embed=embed,
+                    ephemeral=True,
+                )
 
         except Exception as exc:
             print(f"Trade logging error: {type(exc).__name__}: {exc}")
