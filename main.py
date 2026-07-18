@@ -27,6 +27,39 @@ def remove_marked_block(text: str, start_marker: str, end_marker: str) -> str:
     return text
 
 
+def patch_legacy_cleanup_permission_handling() -> None:
+    """Make startup cleanup skip channels the bot cannot read."""
+    legacy_path = Path("legacy_main.py")
+    if not legacy_path.exists():
+        return
+
+    legacy_text = legacy_path.read_text(encoding="utf-8")
+    unsafe_call = "        deleted = await cleanup_existing_non_logs_in_channel(channel)"
+    safe_call = """        try:
+            deleted = await cleanup_existing_non_logs_in_channel(channel)
+        except discord.Forbidden:
+            print(
+                f\"Startup cleanup skipped channel {cleanup_channel_id}: \"
+                \"missing View Channel or Read Message History permission.\"
+            )
+            continue
+        except discord.HTTPException as exc:
+            print(
+                f\"Startup cleanup skipped channel {cleanup_channel_id}: \"
+                f\"{type(exc).__name__}: {exc}\"
+            )
+            continue"""
+
+    if safe_call in legacy_text:
+        return
+    if unsafe_call not in legacy_text:
+        print("Cleanup permission patch warning: startup cleanup call was not found.")
+        return
+
+    legacy_path.write_text(legacy_text.replace(unsafe_call, safe_call, 1), encoding="utf-8")
+    print("Cleanup permission handling patched for inaccessible channels.")
+
+
 bot_path = Path("bot.py")
 if bot_path.exists():
     bot_text = bot_path.read_text(encoding="utf-8")
@@ -40,6 +73,8 @@ if bot_path.exists():
         print("LOA tracking and pay announcement commands injected into bot.py.")
     else:
         print("Generated command injector warning: could not find bot.run(TOKEN) marker.")
+
+patch_legacy_cleanup_permission_handling()
 
 # Preserve and run every existing donation, cleanup, and trade startup injection.
 import legacy_main  # noqa: E402,F401
