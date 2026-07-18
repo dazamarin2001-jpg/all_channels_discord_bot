@@ -1,8 +1,9 @@
-"""Railway entrypoint that adds LOA tracking before loading existing commands."""
+"""Railway entrypoint that adds generated commands before loading existing commands."""
 
 from pathlib import Path
 
 from loa_commands import LOA_BLOCK, LOA_END_MARKER, LOA_START_MARKER
+from pay_commands import PAY_BLOCK, PAY_END_MARKER, PAY_START_MARKER
 
 
 def remove_marked_block(text: str, start_marker: str, end_marker: str) -> str:
@@ -30,13 +31,15 @@ bot_path = Path("bot.py")
 if bot_path.exists():
     bot_text = bot_path.read_text(encoding="utf-8")
     bot_text = remove_marked_block(bot_text, LOA_START_MARKER, LOA_END_MARKER)
+    bot_text = remove_marked_block(bot_text, PAY_START_MARKER, PAY_END_MARKER)
     run_marker = "\n\nbot.run(TOKEN)"
     if run_marker in bot_text:
-        bot_text = bot_text.replace(run_marker, "\n\n" + LOA_BLOCK.strip() + run_marker, 1)
+        generated_blocks = LOA_BLOCK.strip() + "\n\n" + PAY_BLOCK.strip()
+        bot_text = bot_text.replace(run_marker, "\n\n" + generated_blocks + run_marker, 1)
         bot_path.write_text(bot_text, encoding="utf-8")
-        print("LOA tracking commands injected into bot.py.")
+        print("LOA tracking and pay announcement commands injected into bot.py.")
     else:
-        print("LOA injector warning: could not find bot.run(TOKEN) marker.")
+        print("Generated command injector warning: could not find bot.run(TOKEN) marker.")
 
 # Preserve and run every existing donation, cleanup, and trade startup injection.
 import legacy_main  # noqa: E402,F401
