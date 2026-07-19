@@ -37,7 +37,8 @@ async def get_pay_announcement_channel(guild: discord.Guild | None):
 
     if PAY_REMINDER_CHANNEL_ID:
         try:
-            channel_id = int(PAY_REMINDER_CHANNEL_ID)
+            channel_digits = "".join(char for char in PAY_REMINDER_CHANNEL_ID if char.isdigit())
+            channel_id = int(channel_digits)
             channel = guild.get_channel(channel_id) or bot.get_channel(channel_id)
             if channel is None:
                 channel = await bot.fetch_channel(channel_id)
@@ -53,20 +54,53 @@ async def get_pay_announcement_channel(guild: discord.Guild | None):
     return None
 
 
+def normalize_pay_role_name(name: str) -> str:
+    return "".join(char for char in name.casefold() if char.isalnum())
+
+
 def get_pay_alert_role(guild: discord.Guild | None) -> discord.Role | None:
     if guild is None:
         return None
 
     if PAY_ALERT_ROLE_ID:
         try:
-            role = guild.get_role(int(PAY_ALERT_ROLE_ID))
+            role_digits = "".join(char for char in PAY_ALERT_ROLE_ID if char.isdigit())
+            role = guild.get_role(int(role_digits))
             if role is not None:
                 return role
         except (TypeError, ValueError):
             pass
 
-    wanted = PAY_ALERT_ROLE_NAME.casefold().strip()
-    return discord.utils.find(lambda role: role.name.casefold().strip() == wanted, guild.roles)
+    wanted = normalize_pay_role_name(PAY_ALERT_ROLE_NAME)
+
+    exact_match = discord.utils.find(
+        lambda role: normalize_pay_role_name(role.name) == wanted,
+        guild.roles,
+    )
+    if exact_match is not None:
+        return exact_match
+
+    if wanted:
+        partial_matches = [
+            role
+            for role in guild.roles
+            if wanted in normalize_pay_role_name(role.name)
+        ]
+        if len(partial_matches) == 1:
+            return partial_matches[0]
+
+    return None
+
+
+def get_pay_allowed_mentions(role: discord.Role | None) -> discord.AllowedMentions:
+    if role is None:
+        return discord.AllowedMentions.none()
+    return discord.AllowedMentions(
+        everyone=False,
+        users=False,
+        roles=[role],
+        replied_user=False,
+    )
 
 
 def build_pay_announcement_embed(pay_time_utc: datetime, event_type: str) -> discord.Embed:
@@ -168,18 +202,75 @@ async def send_pay_announcement(guild: discord.Guild, event_type: str, pay_time_
     if role is None:
         print(
             f"Pay announcement warning: role '{PAY_ALERT_ROLE_NAME}' was not found. "
-            "Set PAY_ALERT_ROLE_ID or create the role."
+            "Set PAY_ALERT_ROLE_ID to the numeric Discord role ID."
+        )
+    else:
+        permissions = channel.permissions_for(guild.me)
+        print(
+            "Pay announcement role resolved: "
+            f"name={role.name!r}, id={role.id}, mentionable={role.mentionable}, "
+            f"bot_can_mention_roles={permissions.mention_everyone}"
         )
 
-    content = role.mention if role is not None else f"@{PAY_ALERT_ROLE_NAME}"
     embed = build_pay_announcement_embed(pay_time_utc, event_type)
 
     await channel.send(
-        content=content,
+        content=role.mention if role is not None else None,
         embed=embed,
-        allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=True),
+        allowed_mentions=get_pay_allowed_mentions(role),
     )
     return True
+
+
+@bot.tree.command(name="test-pay-ping", description="Test the configured Pay Alert role mention.")
+@app_commands.checks.has_permissions(administrator=True)
+async def test_pay_ping(interaction: discord.Interaction) -> None:
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message(
+            "This command can only be used inside a server.",
+            ephemeral=True,
+        )
+        return
+
+    role = get_pay_alert_role(guild)
+    if role is None:
+        configured_id = PAY_ALERT_ROLE_ID or "not set"
+        await interaction.response.send_message(
+            "I could not find the Pay Alert role. "
+            f"Current PAY_ALERT_ROLE_ID: `{configured_id}`. "
+            f"Current PAY_ALERT_ROLE_NAME: `{PAY_ALERT_ROLE_NAME}`.",
+            ephemeral=True,
+        )
+        return
+
+    channel = interaction.channel
+    if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        await interaction.response.send_message(
+            "Run this command inside a text channel.",
+            ephemeral=True,
+        )
+        return
+
+    permissions = channel.permissions_for(guild.me)
+    if not permissions.send_messages:
+        await interaction.response.send_message(
+            "I do not have permission to send messages in this channel.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"Testing {role.mention}",
+        allowed_mentions=get_pay_allowed_mentions(role),
+    )
+
+    print(
+        "Manual pay ping test: "
+        f"guild={guild.name!r}, channel={channel}, role={role.name!r}, "
+        f"role_id={role.id}, mentionable={role.mentionable}, "
+        f"bot_can_mention_roles={permissions.mention_everyone}"
+    )
 
 
 @tasks.loop(seconds=20)
