@@ -10,6 +10,7 @@ PAY_ALERT_ROLE_ID = os.getenv("PAY_ALERT_ROLE_ID")
 PAY_ALERT_ROLE_NAME = os.getenv("PAY_ALERT_ROLE_NAME", "Pay Alert")
 FSA_PAY_HOURS_GMT = (1, 4, 7, 13, 16, 19)
 FSA_SENT_PAY_EVENTS: set[str] = set()
+PAY_ANNOUNCEMENT_HISTORY_LIMIT = 50
 
 
 def format_pay_clock(value: datetime) -> str:
@@ -20,6 +21,14 @@ def format_pay_clock(value: datetime) -> str:
 def format_pay_zone(pay_time_utc: datetime, timezone_name: str) -> str:
     local_time = pay_time_utc.astimezone(ZoneInfo(timezone_name))
     return f"`{format_pay_clock(local_time)}`"
+
+
+def get_pay_event_key(pay_time_utc: datetime, event_type: str) -> str:
+    return f"{pay_time_utc.strftime('%Y-%m-%d-%H')}-{event_type}"
+
+
+def get_pay_event_title(event_type: str) -> str:
+    return "⏰ FSA PAY REMINDER" if event_type == "reminder" else "💰 PAY IS STARTING NOW!"
 
 
 async def get_pay_announcement_channel(guild: discord.Guild | None):
@@ -65,7 +74,7 @@ def build_pay_announcement_embed(pay_time_utc: datetime, event_type: str) -> dis
 
     if event_type == "reminder":
         embed = discord.Embed(
-            title="⏰ FSA PAY REMINDER",
+            title=get_pay_event_title(event_type),
             description=(
                 "Pay begins in **15 minutes**!\n\n"
                 "Please begin making your way to **FSA Base** and prepare for pay.\n\n"
@@ -77,7 +86,7 @@ def build_pay_announcement_embed(pay_time_utc: datetime, event_type: str) -> dis
         embed.set_footer(text="FSA Pay Team • Please arrive on time")
     else:
         embed = discord.Embed(
-            title="💰 PAY IS STARTING NOW!",
+            title=get_pay_event_title(event_type),
             description=(
                 "Pay has officially begun!\n\n"
                 "Please report to **FSA Base** and follow all instructions provided by the **Pay Team**."
@@ -96,6 +105,32 @@ def build_pay_announcement_embed(pay_time_utc: datetime, event_type: str) -> dis
         embed.add_field(name="⏳ Countdown", value=f"<t:{unix_timestamp}:R>", inline=False)
 
     return embed
+
+
+async def pay_event_already_posted(channel, event_type: str, pay_time_utc: datetime) -> bool:
+    """Check Discord history so restarts or duplicate bot instances cannot repost an event."""
+    expected_title = get_pay_event_title(event_type)
+    expected_local_time = f"<t:{int(pay_time_utc.timestamp())}:F>"
+
+    try:
+        async for message in channel.history(limit=PAY_ANNOUNCEMENT_HISTORY_LIMIT):
+            if bot.user is not None and message.author.id != bot.user.id:
+                continue
+
+            for existing_embed in message.embeds:
+                if existing_embed.title != expected_title:
+                    continue
+
+                for field in existing_embed.fields:
+                    if field.name == "🕒 Your Local Time" and expected_local_time in str(field.value):
+                        return True
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(
+            "Pay duplicate-check warning: could not read announcement history: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    return False
 
 
 def get_due_pay_event(now_utc: datetime) -> tuple[str, datetime] | None:
@@ -124,6 +159,11 @@ async def send_pay_announcement(guild: discord.Guild, event_type: str, pay_time_
         )
         return False
 
+    event_key = get_pay_event_key(pay_time_utc, event_type)
+    if await pay_event_already_posted(channel, event_type, pay_time_utc):
+        print(f"Pay announcement skipped because {event_key} is already in {channel}.")
+        return True
+
     role = get_pay_alert_role(guild)
     if role is None:
         print(
@@ -150,7 +190,7 @@ async def pay_announcement_loop() -> None:
         return
 
     event_type, pay_time_utc = due_event
-    event_key = f"{pay_time_utc.strftime('%Y-%m-%d-%H')}-{event_type}"
+    event_key = get_pay_event_key(pay_time_utc, event_type)
     if event_key in FSA_SENT_PAY_EVENTS:
         return
 
@@ -176,8 +216,8 @@ async def start_pay_announcement_loop() -> None:
     if not pay_announcement_loop.is_running():
         pay_announcement_loop.start()
         print(
-            "Pay announcement loop started for 15-minute reminders and pay-start alerts. "
-            f"Alert role: {PAY_ALERT_ROLE_NAME}"
+            "Pay announcement loop started with duplicate protection for 15-minute reminders "
+            f"and pay-start alerts. Alert role: {PAY_ALERT_ROLE_NAME}"
         )
 # ---- End pay announcement commands ----
 """
