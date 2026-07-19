@@ -108,7 +108,7 @@ def build_pay_announcement_embed(pay_time_utc: datetime, event_type: str) -> dis
 
 
 async def pay_event_already_posted(channel, event_type: str, pay_time_utc: datetime) -> bool:
-    """Check Discord history so restarts or duplicate bot instances cannot repost an event."""
+    # Check Discord history so restarts or duplicate bot instances cannot repost an event.
     expected_title = get_pay_event_title(event_type)
     expected_local_time = f"<t:{int(pay_time_utc.timestamp())}:F>"
 
