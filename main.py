@@ -14,8 +14,37 @@ pay_test_group = app_commands.Group(name="test", description="Bot test tools.")
 
 
 @pay_test_group.command(name="ping", description="Test the configured Pay Alert role mention.")
-@app_commands.checks.has_permissions(administrator=True)
 async def test_pay_ping_alias(interaction: discord.Interaction) -> None:
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message(
+            "This command can only be used inside a server.",
+            ephemeral=True,
+        )
+        return
+
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        try:
+            member = await guild.fetch_member(interaction.user.id)
+        except discord.DiscordException:
+            await interaction.response.send_message(
+                "I could not verify your server roles.",
+                ephemeral=True,
+            )
+            return
+
+    has_chat_moderator = any(
+        normalize_pay_role_name(role.name) == "chatmoderator"
+        for role in member.roles
+    )
+    if not has_chat_moderator:
+        await interaction.response.send_message(
+            "Only members with the Chat Moderator role can use this command.",
+            ephemeral=True,
+        )
+        return
+
     callback = getattr(test_pay_ping, "callback", test_pay_ping)
     await callback(interaction)
 
