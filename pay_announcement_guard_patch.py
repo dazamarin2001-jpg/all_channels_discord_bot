@@ -69,7 +69,7 @@ else:
     embed: discord.Embed | None = None,
     content_prefix: str | None = None,
 ) -> bool:
-    """Send one visible message, verify its ping, and safely replace it if needed."""
+    # Send one visible message, verify its ping, and safely replace it if needed.
     bot_member = guild.me
     permissions = channel.permissions_for(bot_member) if bot_member is not None else None
 
