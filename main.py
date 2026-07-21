@@ -13,7 +13,7 @@ TEST_PING_BLOCK = r"""
 pay_test_group = app_commands.Group(name="test", description="Bot test tools.")
 
 
-@pay_test_group.command(name="ping", description="Test the configured Pay Alert role mention.")
+@pay_test_group.command(name="ping", description="Push a Pay Alert test ping to pay announcements.")
 async def test_pay_ping_alias(interaction: discord.Interaction) -> None:
     guild = interaction.guild
     if guild is None:
@@ -45,8 +45,58 @@ async def test_pay_ping_alias(interaction: discord.Interaction) -> None:
         )
         return
 
-    callback = getattr(test_pay_ping, "callback", test_pay_ping)
-    await callback(interaction)
+    role = get_pay_alert_role(guild)
+    if role is None:
+        configured_id = PAY_ALERT_ROLE_ID or "not set"
+        await interaction.response.send_message(
+            "I could not find the Pay Alert role. "
+            f"Current PAY_ALERT_ROLE_ID: `{configured_id}`. "
+            f"Current PAY_ALERT_ROLE_NAME: `{PAY_ALERT_ROLE_NAME}`.",
+            ephemeral=True,
+        )
+        return
+
+    channel = await get_pay_announcement_channel(guild)
+    if channel is None:
+        await interaction.response.send_message(
+            "I could not find the pay-announcements channel. Check PAY_REMINDER_CHANNEL_ID.",
+            ephemeral=True,
+        )
+        return
+
+    bot_member = guild.me
+    if bot_member is None:
+        await interaction.response.send_message(
+            "I could not verify my server permissions.",
+            ephemeral=True,
+        )
+        return
+
+    permissions = channel.permissions_for(bot_member)
+    if not permissions.send_messages:
+        await interaction.response.send_message(
+            f"I cannot send messages in {channel.mention}.",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        await channel.send(
+            content=f"🔔 Pay Alert test: {role.mention}",
+            allowed_mentions=get_pay_allowed_mentions(role),
+        )
+    except discord.DiscordException as exc:
+        await interaction.response.send_message(
+            f"I could not send the test ping: {type(exc).__name__}: {exc}",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"Test ping sent to {channel.mention} for {role.mention}.",
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
 
 
 bot.tree.add_command(pay_test_group)
