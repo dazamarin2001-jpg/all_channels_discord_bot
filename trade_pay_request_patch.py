@@ -8,7 +8,7 @@ if not path.exists():
     print("Trade Pay Request patch warning: legacy_main.py was not found.")
 else:
     text = path.read_text(encoding="utf-8")
-    marker = "TRADE_PAY_REQUEST_PATCH_VERSION = 1"
+    marker = "TRADE_PAY_REQUEST_PATCH_VERSION = 2"
 
     if marker not in text:
         constants_anchor = 'TRADE_ALLOWED_ROLE_NAMES = {"rank sellers", "rank seller", "chat moderator"}\n'
@@ -95,6 +95,23 @@ else:
         elif new_flow not in text:
             print("Trade Pay Request patch warning: trade submission flow was not found.")
 
+        old_balance_fields = '''            embed.add_field(name="Previous Category Balance", value=old_balance, inline=True)
+            embed.add_field(name="New Category Balance", value=new_balance, inline=True)'''
+        new_balance_fields = '''            embed.add_field(
+                name="Previous Category Balance",
+                value="N/A" if category == "Pay Request" else old_balance,
+                inline=True,
+            )
+            embed.add_field(
+                name="New Category Balance",
+                value="N/A" if category == "Pay Request" else new_balance,
+                inline=True,
+            )'''
+        if old_balance_fields in text:
+            text = text.replace(old_balance_fields, new_balance_fields, 1)
+        elif new_balance_fields not in text:
+            print("Trade Pay Request patch warning: balance embed fields were not found.")
+
         old_footer = '            embed.set_footer(text="Logged to Summary Log and applied to /sale summary totals.")'
         new_footer = '''            if category == "Pay Request":
                 embed.set_footer(
@@ -108,6 +125,6 @@ else:
             print("Trade Pay Request patch warning: trade embed footer was not found.")
 
         path.write_text(text, encoding="utf-8")
-        print("Trade Pay Request support patch applied.")
+        print("Trade Pay Request support patch version 2 applied.")
     else:
-        print("Trade Pay Request support patch already applied.")
+        print("Trade Pay Request support patch version 2 already applied.")
