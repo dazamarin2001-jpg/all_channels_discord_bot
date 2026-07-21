@@ -108,6 +108,26 @@ def patch_legacy_cleanup_permission_handling() -> None:
     print("Cleanup permission handling patched for inaccessible channels.")
 
 
+def patch_trade_modal_label() -> None:
+    """Add Pay Request to the category label shown in the /trade modal."""
+    legacy_path = Path("legacy_main.py")
+    if not legacy_path.exists():
+        return
+
+    legacy_text = legacy_path.read_text(encoding="utf-8")
+    old_label = '        label="Donation/Sale",'
+    new_label = '        label="Donation/Sale/Pay Request",'
+
+    if new_label in legacy_text:
+        return
+    if old_label not in legacy_text:
+        print("Trade modal label patch warning: Donation/Sale label was not found.")
+        return
+
+    legacy_path.write_text(legacy_text.replace(old_label, new_label, 1), encoding="utf-8")
+    print("Trade modal label patched to include Pay Request.")
+
+
 bot_path = Path("bot.py")
 if bot_path.exists():
     bot_text = bot_path.read_text(encoding="utf-8")
@@ -130,6 +150,7 @@ if bot_path.exists():
         print("Generated command injector warning: could not find bot.run(TOKEN) marker.")
 
 patch_legacy_cleanup_permission_handling()
+patch_trade_modal_label()
 
 # Preserve and run every existing donation, cleanup, and trade startup injection.
 import legacy_main  # noqa: E402,F401
