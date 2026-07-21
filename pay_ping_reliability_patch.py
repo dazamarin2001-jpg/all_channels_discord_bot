@@ -40,7 +40,7 @@ else:
     embed: discord.Embed | None = None,
     content_prefix: str | None = None,
 ) -> bool:
-    """Send a message and make a best effort to produce a real role notification."""
+    # Send a message and make a best effort to produce a real role notification.
     if role is None:
         await channel.send(
             content=content_prefix,
