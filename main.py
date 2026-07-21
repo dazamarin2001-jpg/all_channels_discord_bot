@@ -45,17 +45,6 @@ async def test_pay_ping_alias(interaction: discord.Interaction) -> None:
         )
         return
 
-    role = get_pay_alert_role(guild)
-    if role is None:
-        configured_id = PAY_ALERT_ROLE_ID or "not set"
-        await interaction.response.send_message(
-            "I could not find the Pay Alert role. "
-            f"Current PAY_ALERT_ROLE_ID: `{configured_id}`. "
-            f"Current PAY_ALERT_ROLE_NAME: `{PAY_ALERT_ROLE_NAME}`.",
-            ephemeral=True,
-        )
-        return
-
     channel = await get_pay_announcement_channel(guild)
     if channel is None:
         await interaction.response.send_message(
@@ -80,10 +69,31 @@ async def test_pay_ping_alias(interaction: discord.Interaction) -> None:
         )
         return
 
+    role = get_pay_alert_role(guild)
+    use_everyone_fallback = (
+        role is None
+        or not role.members
+        or (not role.mentionable and not permissions.mention_everyone)
+    )
+
+    if use_everyone_fallback:
+        ping_content = "🔔 Pay Alert test fallback: @everyone"
+        ping_target = "@everyone"
+        ping_mentions = discord.AllowedMentions(
+            everyone=True,
+            users=False,
+            roles=False,
+            replied_user=False,
+        )
+    else:
+        ping_content = f"🔔 Pay Alert test: {role.mention}"
+        ping_target = role.mention
+        ping_mentions = get_pay_allowed_mentions(role)
+
     try:
         await channel.send(
-            content=f"🔔 Pay Alert test: {role.mention}",
-            allowed_mentions=get_pay_allowed_mentions(role),
+            content=ping_content,
+            allowed_mentions=ping_mentions,
         )
     except discord.DiscordException as exc:
         await interaction.response.send_message(
@@ -93,7 +103,7 @@ async def test_pay_ping_alias(interaction: discord.Interaction) -> None:
         return
 
     await interaction.response.send_message(
-        f"Test ping sent to {channel.mention} for {role.mention}.",
+        f"Test ping sent to {channel.mention} for {ping_target}.",
         ephemeral=True,
         allowed_mentions=discord.AllowedMentions.none(),
     )
@@ -123,6 +133,105 @@ def remove_marked_block(text: str, start_marker: str, end_marker: str) -> str:
             line_end = len(text)
         text = text[:block_start].rstrip() + "\n" + text[line_end:].lstrip("\n")
     return text
+
+
+def patch_pay_announcement_fallback(block: str) -> str:
+    """Use @everyone when the Pay Alert role cannot produce a useful ping."""
+    old_duplicate_check = '''                for field in existing_embed.fields:
+                    if field.name == "🕒 Your Local Time" and expected_local_time in str(field.value):
+                        return True'''
+    new_duplicate_check = '''                for field in existing_embed.fields:
+                    if field.name != "🕒 Your Local Time" or expected_local_time not in str(field.value):
+                        continue
+
+                    role = get_pay_alert_role(channel.guild)
+                    if message.mention_everyone:
+                        return True
+                    if role is not None and any(mentioned.id == role.id for mentioned in message.role_mentions):
+                        return True
+
+                    print(
+                        "Pay announcement found without a successful role or @everyone ping; "
+                        "retrying the announcement."
+                    )
+                    break'''
+
+    old_send_logic = '''    role = get_pay_alert_role(guild)
+    if role is None:
+        print(
+            f"Pay announcement warning: role '{PAY_ALERT_ROLE_NAME}' was not found. "
+            "Set PAY_ALERT_ROLE_ID to the numeric Discord role ID."
+        )
+    else:
+        permissions = channel.permissions_for(guild.me)
+        print(
+            "Pay announcement role resolved: "
+            f"name={role.name!r}, id={role.id}, mentionable={role.mentionable}, "
+            f"bot_can_mention_roles={permissions.mention_everyone}"
+        )
+
+    embed = build_pay_announcement_embed(pay_time_utc, event_type)
+
+    await channel.send(
+        content=role.mention if role is not None else None,
+        embed=embed,
+        allowed_mentions=get_pay_allowed_mentions(role),
+    )'''
+    new_send_logic = '''    role = get_pay_alert_role(guild)
+    bot_member = guild.me
+    permissions = (
+        channel.permissions_for(bot_member)
+        if bot_member is not None
+        else discord.Permissions.none()
+    )
+    use_everyone_fallback = (
+        role is None
+        or not role.members
+        or (not role.mentionable and not permissions.mention_everyone)
+    )
+
+    if use_everyone_fallback:
+        mention_content = "@everyone"
+        allowed_mentions = discord.AllowedMentions(
+            everyone=True,
+            users=False,
+            roles=False,
+            replied_user=False,
+        )
+        reason = (
+            "Pay Alert role was not found"
+            if role is None
+            else "Pay Alert role has no members or cannot be mentioned"
+        )
+        print(f"Pay announcement using @everyone fallback: {reason}.")
+    else:
+        mention_content = role.mention
+        allowed_mentions = get_pay_allowed_mentions(role)
+        print(
+            "Pay announcement role resolved: "
+            f"name={role.name!r}, id={role.id}, mentionable={role.mentionable}, "
+            f"bot_can_mention_roles={permissions.mention_everyone}"
+        )
+
+    embed = build_pay_announcement_embed(pay_time_utc, event_type)
+
+    await channel.send(
+        content=mention_content,
+        embed=embed,
+        allowed_mentions=allowed_mentions,
+    )'''
+
+    if old_duplicate_check in block:
+        block = block.replace(old_duplicate_check, new_duplicate_check, 1)
+    elif new_duplicate_check not in block:
+        print("Pay fallback patch warning: duplicate-check block was not found.")
+
+    if old_send_logic in block:
+        block = block.replace(old_send_logic, new_send_logic, 1)
+    elif new_send_logic not in block:
+        print("Pay fallback patch warning: announcement send block was not found.")
+
+    return block
 
 
 def patch_legacy_cleanup_permission_handling() -> None:
@@ -186,10 +295,11 @@ if bot_path.exists():
     bot_text = remove_marked_block(bot_text, TEST_PING_START_MARKER, TEST_PING_END_MARKER)
     run_marker = "\n\nbot.run(TOKEN)"
     if run_marker in bot_text:
+        patched_pay_block = patch_pay_announcement_fallback(PAY_BLOCK)
         generated_blocks = (
             LOA_BLOCK.strip()
             + "\n\n"
-            + PAY_BLOCK.strip()
+            + patched_pay_block.strip()
             + "\n\n"
             + TEST_PING_BLOCK.strip()
         )
