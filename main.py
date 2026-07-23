@@ -287,6 +287,30 @@ def patch_trade_modal_label() -> None:
     print("Trade modal label patched to include Pay Request.")
 
 
+def patch_rank_sale_modal_fallback() -> None:
+    """Prevent rank-sale submissions from failing if Seller Habbo was removed at runtime."""
+    bot_path = Path("bot.py")
+    if not bot_path.exists():
+        return
+
+    bot_text = bot_path.read_text(encoding="utf-8")
+    unsafe_line = "            seller_habbo = clean_text(self.seller_habbo.value)"
+    safe_block = '''            seller_input = getattr(self, "seller_habbo", None)
+            seller_habbo = (
+                clean_text(getattr(seller_input, "value", ""))
+                or member_display_name(interaction.user)
+            )'''
+
+    if safe_block in bot_text:
+        return
+    if unsafe_line not in bot_text:
+        print("Rank sale fallback patch warning: seller_habbo read was not found.")
+        return
+
+    bot_path.write_text(bot_text.replace(unsafe_line, safe_block, 1), encoding="utf-8")
+    print("Rank sale modal patched with a safe seller fallback.")
+
+
 bot_path = Path("bot.py")
 if bot_path.exists():
     bot_text = bot_path.read_text(encoding="utf-8")
@@ -311,6 +335,7 @@ if bot_path.exists():
 
 patch_legacy_cleanup_permission_handling()
 patch_trade_modal_label()
+patch_rank_sale_modal_fallback()
 
 # Preserve and run every existing donation, cleanup, and trade startup injection.
 import legacy_main  # noqa: E402,F401
