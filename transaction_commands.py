@@ -36,7 +36,9 @@ def ensure_transaction_layout(spreadsheet=None):
 
     header_values = worksheet.get("A4:H4")
     current_headers = header_values[0] if header_values else []
-    current_headers = list(current_headers) + [""] * (len(TRANSACTION_HEADERS) - len(current_headers))
+    current_headers = list(current_headers) + [""] * (
+        len(TRANSACTION_HEADERS) - len(current_headers)
+    )
     current_headers = current_headers[:len(TRANSACTION_HEADERS)]
 
     if not any(clean_text(value) for value in current_headers):
@@ -51,7 +53,6 @@ def ensure_transaction_layout(spreadsheet=None):
             + " | ".join(TRANSACTION_HEADERS)
         )
 
-    # Make the summary formulas continue working after the original 200 template rows.
     try:
         summary = spreadsheet.worksheet("Summary")
         summary.update(
@@ -76,8 +77,6 @@ def ensure_transaction_layout(spreadsheet=None):
 def append_transaction_to_sheet(row: list[object]) -> int:
     spreadsheet = get_spreadsheet()
     worksheet = ensure_transaction_layout(spreadsheet)
-
-    # The template header is in row 4. Column A identifies the next transaction row.
     first_column = worksheet.col_values(1)
     next_row = max(5, len(first_column) + 1)
     worksheet.update(
@@ -134,7 +133,6 @@ class TransactionModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-
         try:
             rank_seller = clean_text(self.rank_seller.value)
             recipient = clean_text(self.recipient.value)
@@ -149,7 +147,6 @@ class TransactionModal(discord.ui.Modal):
                 )
 
             now = datetime.now(ZoneInfo(TIMEZONE))
-            date_time = now.strftime("%m/%d/%Y %I:%M %p")
             row = [
                 self.log_type,
                 rank_seller,
@@ -158,18 +155,18 @@ class TransactionModal(discord.ui.Modal):
                 credits_value,
                 self.transferred,
                 proof_notes,
-                date_time,
+                now.strftime("%m/%d/%Y %I:%M %p"),
             ]
             sheet_row = await asyncio.to_thread(append_transaction_to_sheet, row)
 
-            color_by_type = {
+            colors = {
                 "Sale": discord.Color.green(),
                 "Donation": discord.Color.purple(),
                 "Trade": discord.Color.gold(),
             }
             embed = discord.Embed(
                 title=f"{self.log_type} Logged",
-                color=color_by_type.get(self.log_type, discord.Color.blurple()),
+                color=colors.get(self.log_type, discord.Color.blurple()),
                 timestamp=now,
             )
             embed.add_field(name="Submitted By", value=interaction.user.mention, inline=True)
@@ -218,6 +215,38 @@ async def can_log_transaction(interaction: discord.Interaction) -> bool:
     return True
 
 
+async def can_check_transaction_sheet(interaction: discord.Interaction) -> bool:
+    if interaction.guild is None:
+        await interaction.response.send_message("Use this command in a server.", ephemeral=True)
+        return False
+
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        try:
+            member = await interaction.guild.fetch_member(interaction.user.id)
+        except discord.DiscordException:
+            await interaction.response.send_message(
+                "I could not verify your server roles.",
+                ephemeral=True,
+            )
+            return False
+
+    is_admin = member.guild_permissions.administrator
+    has_chat_moderation = any(
+        role.name.casefold() == "chat moderation"
+        for role in member.roles
+    )
+    if is_admin or has_chat_moderation:
+        return True
+
+    await interaction.response.send_message(
+        "Only members with the @Chat Moderation role or Administrator permission can use this command.",
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    return False
+
+
 transaction_group = app_commands.Group(
     name="transaction",
     description="Log FSA sales, donations, and trades.",
@@ -252,8 +281,10 @@ async def transaction_log(
 
 
 @transaction_group.command(name="check-sheet", description="Check the transaction spreadsheet connection.")
-@app_commands.checks.has_permissions(administrator=True)
 async def transaction_check_sheet(interaction: discord.Interaction) -> None:
+    if not await can_check_transaction_sheet(interaction):
+        return
+
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         spreadsheet = await asyncio.to_thread(get_spreadsheet)
