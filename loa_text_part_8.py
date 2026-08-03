@@ -19,7 +19,7 @@ PART = r'''
 
 
 @leave_group.command(name="setup", description="Create and style the LOA Records sheet tab.")
-@app_commands.checks.has_permissions(administrator=True)
+@app_commands.check(_loa_staff_allowed)
 async def leave_setup(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
