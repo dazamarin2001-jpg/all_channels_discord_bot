@@ -105,7 +105,7 @@ ai_code = r'''
 
 AI_SITE_CACHE = {"expires": 0.0, "text": ""}
 AI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY and OpenAI is not None else None
-PAY_HOURS_GMT = [1, 4, 7, 13, 16, 19]
+PAY_HOURS_GMT = [1, 7, 13, 19]
 
 
 def clean_website_text(html: str) -> str:
@@ -133,7 +133,7 @@ def get_ai_website_context() -> str:
             parts.append(fetch_one_website(url))
         except Exception:
             pass
-    parts.append("FSA known info: Pay timings are 1:00 AM, 4:00 AM, 7:00 AM, 1:00 PM, 4:00 PM, and 7:00 PM GMT.")
+    parts.append("FSA known info: Pay timings are 1:00 AM, 7:00 AM, 1:00 PM, and 7:00 PM GMT.")
     parts.append("FSA known info: The Foundation Team members are Eskimo, BeccaMneme, missbluegerlx2, and srafin.")
     parts.append("FSA Events Team: The Events Team is responsible for entertainment in the Federal Habbo Agency. They plan and host games to keep the community active and engaged. The Events Team has two branches: Hosts and Planners. Hosts are responsible for hosting games in FSA; some games are hosted in base and others in external rooms related to FSA. Planners create ideas for activities and events such as celebratory events, competitions, and more. Planners may build event rooms if they choose, but it is not required. Events Leadership Team: Events Overseer is vacant, Events Director iC is vacant, Hosting Assistant 2iC is vacant, and Planning Assistant 2iC is vacant.")
     return "\n\n---\n\n".join(parts)[:50000]
@@ -181,7 +181,7 @@ def smart_pay_answer(question: str) -> str | None:
         )
 
     return (
-        "Pay is at **1:00 AM, 4:00 AM, 7:00 AM, 1:00 PM, 4:00 PM, and 7:00 PM GMT**.\n"
+        "Pay is at **1:00 AM, 7:00 AM, 1:00 PM, and 7:00 PM GMT**.\n"
         f"The next one is **{format_time(next_pay, 'GMT')}**, in about **{until}**."
     )
 
